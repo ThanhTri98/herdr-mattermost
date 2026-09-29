@@ -50,12 +50,18 @@ func main() {
 		case "stop":
 			err = a.stop()
 		case "status":
-			if err = a.status(os.Stdout); err == nil {
-				waitQuit()
-			}
+			err = a.status(os.Stdout)
 		default:
 			err = fmt.Errorf("unknown command")
 		}
+	}
+	if cmd == "status" {
+		if err != nil {
+			fmt.Printf("herdr-mm status: %v\n", err)
+		}
+		fmt.Print("\nPress q or Esc to close.")
+		waitQuit()
+		return
 	}
 	if err != nil {
 		log.Fatalf("herdr-mm %s: %v", cmd, err)
@@ -213,26 +219,26 @@ func (a *app) status(w io.Writer) error {
 	} else {
 		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
 	}
-	err := a.withState(func(panes map[string]*pane) error {
-		if len(panes) == 0 {
-			fmt.Fprintln(w, "No panes are mirrored. Run the toggle action on an agent pane to mirror it.")
-			return nil
-		}
-		ids := make([]string, 0, len(panes))
-		for id := range panes {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "PANE\tSTATUS\tAGENT\tDIRECTORY")
-		for _, id := range ids {
-			p := panes[id]
-			fmt.Fprintf(tw, "%s\t%s %s\t%s\t%s\n", id, emoji[p.Status], p.Status, p.Agent, p.Cwd)
-		}
-		return tw.Flush()
-	})
-	fmt.Fprint(w, "\nPress q or Esc to close.")
-	return err
+	panes, err := a.readPanes()
+	if err != nil {
+		return err
+	}
+	if len(panes) == 0 {
+		fmt.Fprintln(w, "No panes are mirrored. Run the toggle action on an agent pane to mirror it.")
+		return nil
+	}
+	ids := make([]string, 0, len(panes))
+	for id := range panes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PANE\tAGENT\tDIRECTORY\tSTATUS")
+	for _, id := range ids {
+		p := panes[id]
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\n", id, p.Agent, p.Cwd, emoji[p.Status], p.Status)
+	}
+	return tw.Flush()
 }
 
 // waitQuit reads keys until q or Esc. stty puts the terminal in raw-enough mode without a dependency.
@@ -247,7 +253,7 @@ func waitQuit() {
 	b := make([]byte, 16)
 	for {
 		n, err := os.Stdin.Read(b)
-		if err != nil || bytes.ContainsAny(b[:n], "qQ\x1b") {
+		if err != nil || n == 1 && (b[0] == 'q' || b[0] == 0x1b) {
 			return
 		}
 	}
@@ -289,16 +295,12 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	path := filepath.Join(a.stateDir, "panes.json")
-	panes := map[string]*pane{}
-	if b, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(b, &panes); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	panes, err := a.readPanes()
+	if err != nil {
 		return err
 	}
 	fnErr := fn(panes) // saved even on error: fn only records what already happened
+	path := filepath.Join(a.stateDir, "panes.json")
 	b, err := json.MarshalIndent(panes, "", "  ")
 	if err == nil {
 		err = os.WriteFile(path+".tmp", b, 0o600)
@@ -307,6 +309,20 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 		err = os.Rename(path+".tmp", path)
 	}
 	return errors.Join(fnErr, err)
+}
+
+// readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
+func (a *app) readPanes() (map[string]*pane, error) {
+	path := filepath.Join(a.stateDir, "panes.json")
+	panes := map[string]*pane{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &panes); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return panes, nil
 }
 
 func (a *app) toggle(id string) error {
