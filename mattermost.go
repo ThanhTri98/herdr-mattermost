@@ -249,7 +249,7 @@ func (a *app) handlePost(p post, late bool) error {
 	} else if late {
 		a.say(p.RootID, "📬 Delivered late: the bot was not connected when you sent this, so it was typed into the agent just now.")
 	} else {
-		a.say(p.RootID, "✅ Received - the agent is working on it.")
+		a.say(p.RootID, "📥 Received - the agent is working on it.")
 	}
 	return nil
 }

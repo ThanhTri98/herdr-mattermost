@@ -349,7 +349,7 @@ func TestReplyPromptsAgent(t *testing.T) {
 	if got := e.prompts(); got != "w1:p1|--fix the bug\n" {
 		t.Fatalf("prompts = %q", got)
 	}
-	if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || !strings.Contains(posts[0].Message, "Received") {
+	if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || posts[0].Message != "📥 Received - the agent is working on it." {
 		t.Fatalf("a delivered prompt gets one acknowledgement: %+v", posts)
 	}
 
