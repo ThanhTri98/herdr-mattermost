@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -283,7 +284,7 @@ type pane struct {
 	Cwd        string `json:"cwd"`
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last posted
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
-	Prompted   string `json:"prompted,omitempty"`    // thread reply last typed into the agent, until its turn is posted
+	Prompted   string `json:"prompted,omitempty"`    // thread reply last typed into the agent
 }
 
 // withState runs fn on the mirrored panes under an exclusive file lock, then saves them. The lock
@@ -438,11 +439,13 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			return err
 		}
 		if uuid != "" && uuid != p.LastReply {
+			// ponytail: Prompted is kept after posting so a turn a background task resumes, which inherits
+			// the thread prompt, is posted too; a terminal prompt identical to the last thread reply is
+			// posted as well. Clear it per turn if that ever bites.
 			if p.Prompted != "" && slices.ContainsFunc(prompts, func(s string) bool { return sameText(s, p.Prompted) }) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
 				}
-				p.Prompted = ""
 			}
 			p.LastReply = uuid
 		}
@@ -565,6 +568,9 @@ func sameText(a, b string) bool {
 	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
 }
 
+// pasteMarker matches the tags Claude wraps pasted text in when it records a prompt.
+var pasteMarker = regexp.MustCompile(`</?pasted_content id="[^"]*">`)
+
 // tag returns the text inside the first <name>...</name> in s.
 func tag(s, name string) string {
 	_, v, _ := strings.Cut(s, "<"+name+">")
@@ -608,10 +614,10 @@ func lastReply(path string) (text, uuid string, prompts []string, err error) {
 		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
 			var s string
 			if json.Unmarshal(e.Message.Content, &s) == nil {
-				if name := tag(s, "command-name"); name != "" {
+				if name := tag(s, "command-name"); strings.HasPrefix(s, "<command-") && name != "" {
 					s = name + " " + tag(s, "command-args") // a slash command is recorded as tags
 				}
-				turn = []string{s}
+				turn = []string{pasteMarker.ReplaceAllString(s, "")}
 			}
 		}
 		if bytes.Contains(line, []byte(`"queued_command"`)) && json.Unmarshal(line, &e) == nil && e.Attachment.CommandMode == "prompt" && !e.IsSidechain {

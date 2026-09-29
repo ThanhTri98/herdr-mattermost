@@ -227,11 +227,11 @@ func (a *app) handlePost(p post, late bool) error {
 		return nil
 	}
 
-	var paneID string
+	var paneID, prev string
 	a.withState(func(panes map[string]*pane) error {
 		for id, pp := range panes {
 			if pp.RootID == p.RootID {
-				paneID = id
+				paneID, prev = id, pp.Prompted
 				// Recorded before typing so the turn's end cannot beat it; marks the turn for posting.
 				pp.Prompted = p.Message
 			}
@@ -243,6 +243,12 @@ func (a *app) handlePost(p post, late bool) error {
 	}
 	log.Printf("prompt %s: %q", paneID, p.Message)
 	if _, err := a.herdr("agent", "prompt", paneID, p.Message); err != nil {
+		a.withState(func(panes map[string]*pane) error {
+			if pp := panes[paneID]; pp != nil && pp.Prompted == p.Message {
+				pp.Prompted = prev
+			}
+			return nil
+		})
 		msg := "❌ Could not prompt the agent: " + err.Error()
 		if he := (*herdrError)(nil); errors.As(err, &he) && he.Code == "agent_blocked" {
 			msg = "✋ The agent is waiting on a dialog. Approve or answer it on the machine, then reply again."

@@ -344,6 +344,10 @@ func TestThreadPromptTranscriptShapes(t *testing.T) {
 			[]string{typed("t1", "fix it"), `{"type":"user","uuid":"t2","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}`}},
 		"task notification mid-turn": {[]string{"fix it"},
 			[]string{typed("t1", "fix it"), `{"type":"user","uuid":"t2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>x</task-notification>"}}`}},
+		"prompt mentioning a command tag": {[]string{"sao <command-name> không khớp?"},
+			[]string{typed("t1", "sao <command-name> không khớp?")}},
+		"pasted text": {[]string{"look at this\nline one\nline two"},
+			[]string{typed("t1", "look at this\n\n<pasted_content id=\"c737\">\nline one\nline two\n</pasted_content id=\"c737\">\n")}},
 		"slash command": {[]string{"/review  foo"},
 			[]string{typed("t1", "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>foo</command-args>"),
 				`{"type":"user","uuid":"t2","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"skill body"}]}}`}},
@@ -366,6 +370,40 @@ func TestThreadPromptTranscriptShapes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPromptedFollowsThread posts turns resumed by a background task and keeps a failed prompt from
+// taking over the thread's prompt.
+func TestPromptedFollowsThread(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "working")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	root := e.mm.snapshot()[0].ID
+	idle := func(want string) {
+		t.Helper()
+		e.setAgent(t, "idle")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		e.setAgent(t, "working")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		if posts := e.mm.snapshot(); posts[len(posts)-1].Message != want {
+			t.Fatalf("last post = %q, want %q: %+v", posts[len(posts)-1].Message, want, posts)
+		}
+	}
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "run the tests", CreateAt: 100}))
+	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "yes", CreateAt: 101}))
+	os.Remove(filepath.Join(e.herdrDir, "blocked"))
+	e.appendTranscript(t, typed("t1", "run the tests"), assistant("t2", "m1", "text", "Started them in the background.", false))
+	idle("Started them in the background.")
+
+	e.appendTranscript(t, `{"type":"user","uuid":"t3","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>done</task-notification>"}}`,
+		assistant("t4", "m2", "text", "All tests pass.", false))
+	idle("All tests pass.")
+
+	e.appendTranscript(t, typed("t5", "yes"), assistant("t6", "m3", "text", "terminal answer", false))
+	idle("All tests pass.")
 }
 
 func TestLastReplyAndTruncate(t *testing.T) {
