@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func TestCaptureCmd(t *testing.T) {
@@ -103,6 +105,22 @@ func TestRenderKeepsGlyphsInTheirCells(t *testing.T) {
 	for from, to := range substitutes {
 		if a := row(string(from)); !has(from) && has(to) && cellsDiffer(a, row(string(to)), 0, a.Bounds().Max.X) {
 			t.Errorf("%c, which no font has, is not drawn as %c", from, to)
+		}
+	}
+}
+
+func TestRenderDecomposedMatchesPrecomposed(t *testing.T) {
+	faces, err := loadFonts()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, s := range []string{"ắ", "ể", "ố", "ư", "ơ"} {
+		nfd := norm.NFD.String(s)
+		if nfd == s {
+			t.Fatalf("%s did not decompose", s)
+		}
+		if a, b := render(parseANSI(s), faces), render(parseANSI(nfd), faces); cellsDiffer(a, b, 0, a.Bounds().Max.X) {
+			t.Errorf("decomposed %s renders differently from precomposed", s)
 		}
 	}
 }

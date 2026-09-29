@@ -22,6 +22,7 @@ import (
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
+	"golang.org/x/text/unicode/norm"
 	"golang.org/x/text/width"
 )
 
@@ -414,7 +415,7 @@ func render(g [][]cell, faces []font.Face) image.Image {
 			}
 			px, py := pad+x*cw, pad+y*ch
 			draw.Draw(img, image.Rect(px, py, px+w, py+ch), image.NewUniform(bg), image.Point{}, draw.Src)
-			for i, r := range []rune(c.text) {
+			for i, r := range []rune(norm.NFC.String(c.text)) { // NFC, so only marks with no precomposed form are drawn apart
 				f, r, ok := faceFor(faces, r)
 				if !ok && i > 0 {
 					continue // a mark or joiner no font has
