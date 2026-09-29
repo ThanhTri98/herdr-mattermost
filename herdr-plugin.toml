@@ -17,6 +17,7 @@ id = "status"
 title = "Mattermost status"
 description = "The daemon and the panes mirrored to Mattermost"
 placement = "popup"
+width = "90%"
 command = ["sh", "-c", "exec ./herdr-mm status"]
 
 [[actions]]
