@@ -81,7 +81,7 @@ Then run `herdr server reload-config`.
 
 Focus an agent pane and press the key, or run the **Toggle Mattermost mirroring** action from the pane's action menu. A new thread appears in your DM with the bot. Run the toggle again to stop mirroring; the root post is marked and the thread stops updating. Closing the pane does the same. Moving the pane to another workspace keeps its thread.
 
-Run the **Show Mattermost status** action, or press its key, to open a popup that shows whether the daemon is running and lists the mirrored panes with their status, agent and directory. Press `q` or `Esc` to close it. It is a snapshot taken when it opens.
+Run the **Show Mattermost status** action, or press its key, to open a popup that shows whether the daemon is running and lists every pane herdr reports an agent in, with its agent, directory, status and whether it is mirrored. Move with the up and down arrows or `j` and `k`, and press `Enter` or `Space` to toggle mirroring of the selected pane, exactly as the toggle action does on that pane. The list refreshes after every key, and a failed toggle shows its error in the popup. Press `q` or `Esc` to close it.
 
 The daemon that listens for your replies is started by herdr at startup and by every toggle, so there is nothing else to run. Only one daemon runs at a time. If Mattermost cannot be reached when it starts, it keeps retrying.
 
@@ -114,7 +114,7 @@ That is the plugin state directory herdr passes as `HERDR_PLUGIN_STATE_DIR`. The
 | `toggle` | the pane action | Creates the pane's root post, or marks it and stops mirroring. |
 | `event` | `[[events]]` hooks for `pane.agent_status_changed`, `pane.moved` and `pane.closed` | Edits the root post and posts replies or dialogs for a mirrored pane. A move to another workspace gives the pane a new id, so the thread is re-keyed to it. |
 | `stop` | the stop action | Stops the daemon and waits for it to exit. |
-| `status` | the `status` popup pane, opened by the status action | Prints whether the daemon is running and the mirrored panes, then waits for `q` or `Esc`. |
+| `status` | the `status` popup pane, opened by the status action | Lists the agent panes (`herdr agent list`) with whether each is mirrored, and toggles the selected one on `Enter` or `Space` until `q` or `Esc`. |
 
 Status changes arrive through the plugin `[[events]]` hook rather than the socket's `events.subscribe`. The hook already fires for every pane and needs no connection to keep alive, while a subscription is per pane and would have to be re-made whenever a pane is toggled, the daemon restarts, or herdr restarts. Hooks can run concurrently and late, so each one takes a lock on the state file, asks `herdr agent get` for the pane's current state instead of trusting the event, and skips replies and dialogs it has already posted.
 

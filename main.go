@@ -5,7 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
-//	herdr-mm status  popup pane: show the daemon and the mirrored panes, then wait for q or Esc
+//	herdr-mm status  popup pane: list agent panes, toggle the selected one, close on q or Esc
 package main
 
 import (
@@ -52,16 +52,14 @@ func main() {
 		case "stop":
 			err = a.stop()
 		case "status":
-			err = a.status(os.Stdout)
+			a.popup()
+			return
 		default:
 			err = fmt.Errorf("unknown command")
 		}
 	}
-	if cmd == "status" {
-		if err != nil {
-			fmt.Printf("herdr-mm status: %v\n", err)
-		}
-		fmt.Print("\nPress q or Esc to close.")
+	if cmd == "status" { // load failed; show why until closed
+		fmt.Printf("herdr-mm status: %v\n\nPress q or Esc to close.", err)
 		waitQuit()
 		return
 	}
@@ -214,44 +212,149 @@ func (a *app) daemonPid() int {
 	return pid
 }
 
-// status prints whether the daemon runs and the mirrored panes.
-func (a *app) status(w io.Writer) error {
+// row is a pane herdr reports an agent in, listed in the status popup.
+type row struct {
+	ID, Agent, Cwd, Status string
+	Mirrored               bool
+}
+
+// listedAgent is an entry of herdr agent list.
+type listedAgent struct {
+	agentInfo
+	PaneID string `json:"pane_id"`
+}
+
+// rows lists the agent panes. It does not take state.lock, which a toggle or
+// event hook holds across Mattermost calls.
+func (a *app) rows() ([]row, error) {
+	panes, err := a.readPanes()
+	if err != nil {
+		return nil, err
+	}
+	var r struct {
+		Result struct{ Agents []listedAgent }
+	}
+	out, err := a.herdr("agent", "list")
+	if err == nil {
+		err = json.Unmarshal(out, &r)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return listRows(r.Result.Agents, panes), nil
+}
+
+// listRows marks which of herdr's agents are mirrored.
+func listRows(agents []listedAgent, panes map[string]*pane) []row {
+	var rows []row
+	for _, ag := range agents {
+		_, on := panes[ag.PaneID]
+		rows = append(rows, row{ID: ag.PaneID, Agent: ag.Agent, Cwd: ag.Cwd, Status: ag.Status, Mirrored: on})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows
+}
+
+// status prints whether the daemon runs and the rows, with a cursor on rows[sel].
+func (a *app) status(w io.Writer, rows []row, sel int) error {
 	if pid := a.daemonPid(); pid != 0 {
 		fmt.Fprintf(w, "Mattermost daemon: running (pid %d)\n\n", pid)
 	} else {
 		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
 	}
-	panes, err := a.readPanes()
-	if err != nil {
-		return err
-	}
-	if len(panes) == 0 {
-		fmt.Fprintln(w, "No panes are mirrored. Run the toggle action on an agent pane to mirror it.")
+	if len(rows) == 0 {
+		fmt.Fprintln(w, "No agent panes.")
 		return nil
 	}
-	ids := make([]string, 0, len(panes))
-	for id := range panes {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PANE\tAGENT\tDIRECTORY\tSTATUS")
-	for _, id := range ids {
-		p := panes[id]
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\n", id, p.Agent, p.Cwd, emoji[p.Status], p.Status)
+	fmt.Fprintln(tw, " \tPANE\tAGENT\tDIRECTORY\tSTATUS\tMIRRORED")
+	for i, r := range rows {
+		cursor, on := " ", ""
+		if i == sel {
+			cursor = ">"
+		}
+		if r.Mirrored {
+			on = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
 	}
 	return tw.Flush()
 }
 
-// waitQuit reads keys until q or Esc. stty puts the terminal in raw-enough mode without a dependency.
-func waitQuit() {
+// popup redraws the status after every key: arrows or j/k move, Enter or Space toggles the selected
+// pane, q or Esc closes.
+func (a *app) popup() {
+	defer rawMode()()
+	sel, msg := 0, ""
+	b := make([]byte, 16)
+	for {
+		rows, err := a.rows()
+		sel = max(min(sel, len(rows)-1), 0)
+		fmt.Print("\x1b[H\x1b[2J")
+		if err == nil {
+			err = a.status(os.Stdout, rows, sel)
+		}
+		if err != nil {
+			fmt.Printf("herdr-mm status: %v\n", err)
+		}
+		if msg != "" {
+			fmt.Printf("\n%s\n", msg)
+		}
+		fmt.Print("\n↑/↓ or j/k to move, Enter or Space to toggle mirroring. Press q or Esc to close.")
+		n, err := os.Stdin.Read(b)
+		k := string(b[:n])
+		if err != nil || k == "\x1b" {
+			return
+		}
+		for k != "" { // keys typed quickly arrive in one read
+			key := k[:1]
+			if strings.HasPrefix(k, "\x1b[") && len(k) >= 3 {
+				key = k[:3]
+			}
+			k = k[len(key):]
+			switch key {
+			case "q":
+				return
+			case "\x1b[A", "k":
+				sel = max(sel-1, 0)
+			case "\x1b[B", "j":
+				sel = max(min(sel+1, len(rows)-1), 0)
+			case "\r", "\n", " ":
+				if sel < len(rows) {
+					msg = a.popupToggle(rows[sel].ID)
+				}
+			}
+		}
+	}
+}
+
+// popupToggle toggles a pane as the toggle action does and returns the error to show, if any.
+func (a *app) popupToggle(id string) string {
+	fmt.Printf("\n\nToggling %s...", id)
+	err := a.toggle(id)
+	if err == nil {
+		err = a.start()
+	}
+	if err != nil {
+		return fmt.Sprintf("toggle %s: %v", id, err)
+	}
+	return ""
+}
+
+// rawMode puts the terminal in raw-enough mode without a dependency and returns the undo.
+func rawMode() func() {
 	stty := func(args ...string) {
 		cmd := exec.Command("stty", args...)
 		cmd.Stdin = os.Stdin
 		cmd.Run()
 	}
 	stty("-icanon", "-echo", "min", "1")
-	defer stty("icanon", "echo")
+	return func() { stty("icanon", "echo") }
+}
+
+// waitQuit reads keys until q or Esc.
+func waitQuit() {
+	defer rawMode()()
 	b := make([]byte, 16)
 	for {
 		n, err := os.Stdin.Read(b)

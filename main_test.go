@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,6 +114,7 @@ d=$(dirname "$0")
 case "$1 $2" in
 "agent get") cat "$d/agent.json" ;;
 "agent read") cat "$d/screen.txt" ;;
+"agent list") cat "$d/agents.json" 2>/dev/null || echo '{"result":{"agents":[]}}' ;;
 "status server") [ -e "$d/stopped" ] && echo '{"running":false}' || echo '{"running":true}' ;;
 "plugin list")
   [ -e "$d/disabled" ] && on=false || on=true
@@ -647,33 +648,51 @@ func TestConfigErrors(t *testing.T) {
 	}
 }
 
+func TestListRows(t *testing.T) {
+	agents := []listedAgent{
+		{agentInfo{Status: "working", Agent: "claude", Cwd: "/b"}, "w1:p3"},
+		{agentInfo{Status: "idle", Agent: "codex", Cwd: "/a"}, "w1:p1"},
+	}
+	panes := map[string]*pane{"w1:p3": {Status: "idle"}, "w1:p2": {Status: "idle", Agent: "claude", Cwd: "/c"}}
+	got := listRows(agents, panes)
+	want := []row{
+		{ID: "w1:p1", Agent: "codex", Cwd: "/a", Status: "idle"},
+		{ID: "w1:p3", Agent: "claude", Cwd: "/b", Status: "working", Mirrored: true},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("listRows = %+v, want %+v", got, want)
+	}
+}
+
 func TestStatus(t *testing.T) {
 	e := newTestEnv(t)
 	var out strings.Builder
-	if err := e.a.status(&out); err != nil {
+	if err := e.a.status(&out, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if s := out.String(); !strings.Contains(s, "daemon: not running") || !strings.Contains(s, "No panes are mirrored") {
+	if s := out.String(); !strings.Contains(s, "daemon: not running") || !strings.Contains(s, "No agent panes") {
 		t.Fatalf("status = %q", s)
 	}
 	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
-	e.a.withState(func(panes map[string]*pane) error {
-		panes["w1:p2"] = &pane{Status: "idle", Agent: "claude", Cwd: "/src/app"}
-		return nil
-	})
+	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"id":"cli:agent:list","result":{"type":"agent_list","agents":[
+		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"}]}}`), 0o644)
+	rows, err := e.a.rows()
+	if err != nil {
+		t.Fatal(err)
+	}
 	out.Reset()
-	if err := e.a.status(&out); err != nil {
+	if err := e.a.status(&out, rows, 0); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
-	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "w1:p2", "🟢 idle", "claude", "/src/app"} {
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "w1:p2", "🟢 idle", "claude", "/src/app"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("status = %q, want %q", s, want)
 		}
 	}
 	lines := strings.Split(s, "\n")
 	head, row := lines[2], lines[3]
-	for col, cell := range map[string]string{"AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
+	for col, cell := range map[string]string{"PANE": "w1:p2", "AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
 		if strings.Index(head, col) != strings.Index(row, cell) {
 			t.Fatalf("%s is not above %s:\n%s\n%s", col, cell, head, row)
 		}
@@ -684,14 +703,14 @@ func TestStatus(t *testing.T) {
 	defer lock.Close()
 	syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
 	done := make(chan error, 1)
-	go func() { done <- e.a.status(io.Discard) }()
+	go func() { _, err := e.a.rows(); done <- err }()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("status waited for state.lock")
+		t.Fatal("rows waited for state.lock")
 	}
 }
 
@@ -699,7 +718,7 @@ func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
 	e := newTestEnv(t)
 	os.WriteFile(filepath.Join(e.a.stateDir, "panes.json"), []byte("{"), 0o600)
 	cmd := exec.Command(os.Args[0], "status")
-	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir)
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir, "HERDR_BIN_PATH="+e.a.herdrBin)
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
