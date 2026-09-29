@@ -83,7 +83,7 @@ Focus an agent pane and press the key, or run the **Toggle Mattermost mirroring*
 
 Run the **Show Mattermost status** action, or press its key, to open a popup that shows whether the daemon is running and lists every pane herdr reports an agent in, with its name, pane id, agent, directory, status and whether it is mirrored. Move with the up and down arrows or `j` and `k`, and press `Enter` or `Space` to toggle mirroring of the selected pane, exactly as the toggle action does on that pane. The list refreshes after every key, and a failed toggle shows its error in the popup. Press `q` or `Esc` to close it. A pane's name is the one you gave it with herdr's pane rename, otherwise its workspace's label, followed by the tab's label when the workspace has more than one tab.
 
-The daemon that listens for your replies is started by herdr at startup and by every toggle, so there is nothing else to run. Only one daemon runs at a time. If Mattermost cannot be reached when it starts, it keeps retrying.
+The daemon that listens for your replies is started by herdr at startup and by every toggle, so there is nothing else to run. Only one daemon runs at a time. If Mattermost cannot be reached when it starts, it keeps retrying. Each time it connects, it posts a message in the DM saying whether the daemon just started (herdr started, or the daemon was restarted) or reconnected after the connection dropped, how long it was down in that case, and how many messages sent while it was disconnected it has now handled.
 
 Before it acts on a message, the daemon checks that herdr is running and the plugin is still enabled. If not, it answers that nothing was typed into the agent and exits.
 

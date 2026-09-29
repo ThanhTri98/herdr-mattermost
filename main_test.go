@@ -542,8 +542,8 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "bob-id", Message: "not alice"})
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "", DeleteAt: 9})
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 2"})
-	if err := e.a.catchUp(); err != nil {
-		t.Fatal(err)
+	if n, err := e.a.catchUp(); err != nil || n != 2 {
+		t.Fatalf("catchUp = %d, %v; want 2 handled", n, err)
 	}
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\n" {
 		t.Fatalf("prompts = %q", got)
@@ -566,8 +566,8 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 
 	missed2 := e.mm.snapshot()[4]
 	e.a.handleEvent(posted(missed2)) // the WebSocket delivering it too must not prompt twice
-	if err := e.a.catchUp(); err != nil {
-		t.Fatal(err)
+	if n, err := e.a.catchUp(); err != nil || n != 0 {
+		t.Fatalf("catchUp = %d, %v; want nothing left", n, err)
 	}
 	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "live", CreateAt: 100}))
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\nw1:p1|live\n" {
@@ -575,6 +575,16 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(e.a.stateDir, "last_post")); string(b) != "100" {
 		t.Fatalf("last_post = %q", b)
+	}
+}
+
+func TestConnectedMessage(t *testing.T) {
+	now := time.Unix(1000, 0)
+	if got := connectedMessage(time.Time{}, now, 0); got != "🔌 Connected: the herdr-mm daemon started (herdr start or daemon restart). Caught up 0 late message(s) sent while disconnected." {
+		t.Fatalf("start = %q", got)
+	}
+	if got := connectedMessage(now.Add(-65*time.Second), now, 2); got != "🔌 Reconnected after the connection dropped; down for 1m5s. Caught up 2 late message(s) sent while disconnected." {
+		t.Fatalf("reconnect = %q", got)
 	}
 }
 

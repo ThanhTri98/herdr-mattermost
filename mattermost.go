@@ -148,9 +148,14 @@ func (a *app) listenOnce() error {
 		return err
 	}
 	log.Print("websocket connected")
-	if err := a.catchUp(); err != nil {
+	late, err := a.catchUp()
+	if err != nil {
 		return err
 	}
+	// ponytail: one post per connect, so a flapping network posts on every reconnect; rate limit if that bites.
+	a.say("", connectedMessage(a.downSince, time.Now(), late))
+	a.downSince = time.Time{}
+	defer func() { a.downSince = time.Now() }() // set only once connected: failed dials keep the first drop time
 
 	// Mattermost pings about every 60s; 2 minutes of silence means the connection is dead.
 	const readWait = 2 * time.Minute
@@ -171,19 +176,35 @@ func (a *app) listenOnce() error {
 	}
 }
 
-// catchUp handles the DM posts sent while the WebSocket was down, oldest first.
-func (a *app) catchUp() error {
+// catchUp handles the DM posts sent while the WebSocket was down, oldest first, and returns how many
+// it handled.
+func (a *app) catchUp() (int, error) {
 	var list struct{ Posts map[string]post }
 	if err := a.api(http.MethodGet, fmt.Sprintf("/channels/%s/posts?since=%d", a.dmID, a.lastPost), nil, &list); err != nil {
-		return err
+		return 0, err
 	}
 	posts := slices.SortedFunc(maps.Values(list.Posts), func(x, y post) int { return cmp.Compare(x.CreateAt, y.CreateAt) })
+	n := 0
 	for _, p := range posts {
+		before := a.lastPost
 		if err := a.handlePost(p, true); err != nil {
-			return err
+			return n, err
+		}
+		if a.lastPost != before {
+			n++
 		}
 	}
-	return nil
+	return n, nil
+}
+
+// connectedMessage announces a WebSocket connection: the daemon's first when downSince is zero,
+// otherwise a reconnect after the connection dropped at downSince.
+func connectedMessage(downSince, now time.Time, late int) string {
+	msg := "🔌 Connected: the herdr-mm daemon started (herdr start or daemon restart)."
+	if !downSince.IsZero() {
+		msg = fmt.Sprintf("🔌 Reconnected after the connection dropped; down for %s.", now.Sub(downSince).Round(time.Second))
+	}
+	return fmt.Sprintf("%s Caught up %d late message(s) sent while disconnected.", msg, late)
 }
 
 func (a *app) handleEvent(raw []byte) error {

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 	"unicode/utf8"
 )
 
@@ -71,8 +72,9 @@ func main() {
 type app struct {
 	mmURL, token, user                     string // from $HERDR_PLUGIN_CONFIG_DIR/.env
 	envPath, stateDir, herdrBin, claudeDir string
-	botID, userID, dmID                    string // filled by connect
-	lastPost                               int64  // create_at of the last DM post the daemon handled
+	botID, userID, dmID                    string    // filled by connect
+	lastPost                               int64     // create_at of the last DM post the daemon handled
+	downSince                              time.Time // when the WebSocket dropped; zero before the first connect
 }
 
 func load() (*app, error) {
