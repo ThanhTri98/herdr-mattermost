@@ -41,12 +41,12 @@ var (
 	capturePoll    = 500 * time.Millisecond
 )
 
-// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is blocked, or is
-// not working and the screen has settled. After /status, /stats or /usage it presses Esc to close the
-// panel Claude leaves open, but only when herdr reports the agent idle or done.
 // escCommands are the slash commands whose panel stays open until Esc.
 var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true}
 
+// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is blocked, or is
+// not working and the screen has settled. After /status, /stats or /usage it presses Esc to close the
+// panel Claude leaves open, but only when herdr reports the agent idle or done.
 func (a *app) capture(rootID, cmd string) {
 	panes, err := a.readPanes()
 	if err != nil {
