@@ -349,20 +349,20 @@ func TestReplyPromptsAgent(t *testing.T) {
 	if got := e.prompts(); got != "w1:p1|--fix the bug\n" {
 		t.Fatalf("prompts = %q", got)
 	}
-	if posts := e.mm.snapshot(); len(posts) != 0 {
-		t.Fatalf("a delivered prompt needs no answer: %+v", posts)
+	if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || posts[0].Message != "📥 Received - the agent is working on it." {
+		t.Fatalf("a delivered prompt gets one acknowledgement: %+v", posts)
 	}
 
 	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
 	e.a.handleEvent(posted(post{ID: "r2", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "yes", CreateAt: 2}))
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || posts[0].RootID != "root1" || !strings.Contains(posts[0].Message, "Approve or answer it on the machine") {
+	if len(posts) != 2 || posts[1].RootID != "root1" || !strings.Contains(posts[1].Message, "Approve or answer it on the machine") {
 		t.Fatalf("blocked answer = %+v", posts)
 	}
 
 	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
-	if len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "w1:p1") || !strings.Contains(posts[1].Message, "/_redirect/pl/root1") {
+	if len(posts) != 3 || posts[2].RootID != "" || !strings.Contains(posts[2].Message, "w1:p1") || !strings.Contains(posts[2].Message, "/_redirect/pl/root1") {
 		t.Fatalf("list answer = %+v", posts)
 	}
 }
@@ -402,11 +402,17 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\n" {
 		t.Fatalf("prompts = %q", got)
 	}
-	var notes int
+	var notes, acks int
 	for _, p := range e.mm.snapshot() {
 		if p.UserID == "bot" && p.RootID == "root1" && strings.Contains(p.Message, "Delivered late") {
 			notes++
 		}
+		if strings.Contains(p.Message, "Received") {
+			acks++
+		}
+	}
+	if acks != 0 {
+		t.Fatalf("a late reply gets only the late note: %+v", e.mm.snapshot())
 	}
 	if notes != 2 {
 		t.Fatalf("want a late note per caught-up reply, got %d: %+v", notes, e.mm.snapshot())

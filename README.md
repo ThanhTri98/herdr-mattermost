@@ -7,7 +7,7 @@ Switch mirroring on for a pane and the bot opens a thread for it in your direct 
 - The thread's root post shows the agent's live status (🟢 idle, ⏳ working, ✅ done, ✋ blocked, ❔ unknown) and is edited in place.
 - When the agent finishes a turn, its last reply is posted into the thread.
 - When the agent stops on an approval or question dialog, the dialog is posted into the thread and you are @mentioned. Answer the dialog on the machine; approving from Mattermost is not supported.
-- A reply you write in the thread is typed into that agent, like `herdr agent prompt`. A reply sent while the bot was disconnected is typed in when it reconnects, with a note in the thread saying it was delivered late.
+- A reply you write in the thread is typed into that agent, like `herdr agent prompt`, and the bot acknowledges it in the thread right away. A reply sent while the bot was disconnected is typed in when it reconnects, with a note in the thread saying it was delivered late.
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.
 
 Only the one Mattermost user named in `MM_USER` is obeyed, and only in the bot's DM. Everyone else, the bot itself, and bot or webhook posts are ignored.
