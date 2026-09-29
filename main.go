@@ -158,7 +158,7 @@ func (a *app) daemon() error {
 	if err := lock.Truncate(0); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprint(lock, os.Getpid()); err != nil { // read by stop
+	if _, err := fmt.Fprint(lock, os.Getpid()); err != nil { // read by stop and status
 		return err
 	}
 	if err := a.requireMM(); err != nil {
