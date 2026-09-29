@@ -101,13 +101,13 @@ That is the plugin state directory herdr passes as `HERDR_PLUGIN_STATE_DIR`. The
 | `daemon` | `start` | Holds the Mattermost WebSocket and types your thread replies into the agent with `herdr agent prompt`. A lock file keeps it to one instance. |
 | `toggle` | the pane action | Creates the pane's root post, or marks it and stops mirroring. |
 | `event` | `[[events]]` hooks for `pane.agent_status_changed`, `pane.moved` and `pane.closed` | Edits the root post and posts replies or dialogs for a mirrored pane. A move to another workspace gives the pane a new id, so the thread is re-keyed to it. |
-| `stop` | the global stop action | Stops the daemon and waits for it to exit. |
+| `stop` | the stop action | Stops the daemon and waits for it to exit. |
 
 Status changes arrive through the plugin `[[events]]` hook rather than the socket's `events.subscribe`. The hook already fires for every pane and needs no connection to keep alive, while a subscription is per pane and would have to be re-made whenever a pane is toggled, the daemon restarts, or herdr restarts. Hooks can run concurrently and late, so each one takes a lock on the state file, asks `herdr agent get` for the pane's current state instead of trusting the event, and skips replies and dialogs it has already posted.
 
 The last reply is read from the agent's Claude transcript, `~/.claude/projects/*/<session id>.jsonl` (`$CLAUDE_CONFIG_DIR` replaces `~/.claude` when set): the text blocks of the newest assistant message outside subagents. Posts are cut to Mattermost's 16383-character limit.
 
-The pane-to-thread mapping lives in `panes.json` in the plugin state directory, so a restarted daemon keeps using the same threads. `last_post` there holds the time of the last DM message the daemon handled. Each time the WebSocket connects, the daemon fetches the DM messages sent since then, handles them oldest first, and skips any it has already handled.
+The pane-to-thread mapping lives in `panes.json` in the plugin state directory, so a restarted daemon keeps using the same threads. The `last_post` file next to it holds the time of the last DM message the daemon handled. Each time the WebSocket connects, the daemon fetches the DM messages sent since then, handles them oldest first, and skips any it has already handled.
 
 ## Limits and follow-ups
 
