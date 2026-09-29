@@ -869,9 +869,14 @@ func TestNumbered(t *testing.T) {
 	if want := map[string]string{"w3:p1": "a", "w12:p1": "a #2", "w1:p2": "b", "w1:p10": "b #2"}; !maps.Equal(got, want) {
 		t.Fatalf("numbered = %q, want %q", got, want)
 	}
-	// herdr's ids count 0-9 then A-V: wA comes after w9, and w13 after wV.
+	// herdr's ids count 1-9, then A-Z, then 0: wA comes after w9, and w13 after wV.
 	got = numbered(map[string]string{"wA:p1": "a", "w9:p1": "a", "w13:p1": "c", "wV:p1": "c", "w1:p10": "d", "w1:pA": "d", "w1:p9": "d"})
 	if want := map[string]string{"w9:p1": "a", "wA:p1": "a #2", "wV:p1": "c", "w13:p1": "c #2", "w1:p9": "d", "w1:pA": "d #2", "w1:p10": "d #3"}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+	// herdr gives w0 after wZ, then w11.
+	got = numbered(map[string]string{"w0:p1": "e", "w11:p1": "e", "wZ:p1": "e", "w1:p1": "e"})
+	if want := map[string]string{"w1:p1": "e", "wZ:p1": "e #2", "w0:p1": "e #3", "w11:p1": "e #4"}; !maps.Equal(got, want) {
 		t.Fatalf("numbered = %q, want %q", got, want)
 	}
 }

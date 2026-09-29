@@ -351,11 +351,14 @@ func numbered(names map[string]string) map[string]string {
 }
 
 // paneOrder orders pane ids like wV:p3 or w13:p2 by workspace, then pane. herdr counts each part up
-// like a number with digits 0-9 then A-V, so a shorter part comes first.
+// like a number with digits 1-9, then A-Z, then 0, so a shorter part comes first and 0 ranks after Z.
 func paneOrder(x, y string) int {
 	xw, xp, _ := strings.Cut(x, ":")
 	yw, yp, _ := strings.Cut(y, ":")
-	count := func(a, b string) int { return cmp.Or(cmp.Compare(len(a), len(b)), cmp.Compare(a, b)) }
+	count := func(a, b string) int {
+		a, b = strings.ReplaceAll(a, "0", "~"), strings.ReplaceAll(b, "0", "~")
+		return cmp.Or(cmp.Compare(len(a), len(b)), cmp.Compare(a, b))
+	}
 	return cmp.Or(count(xw, yw), count(xp, yp))
 }
 
