@@ -359,7 +359,7 @@ func (a *app) handlePost(p post, late bool) error {
 		a.sayIn(p.ChannelID, root, a.t("plugin.off"))
 		return errPluginOff
 	}
-	if h, _ := a.stripMention(text); strings.EqualFold(h, "help") {
+	if h, mentioned := a.stripMention(text); (mentioned || !inDM) && strings.EqualFold(h, "help") {
 		a.sayIn(p.ChannelID, root, a.t("help"))
 		return nil
 	}

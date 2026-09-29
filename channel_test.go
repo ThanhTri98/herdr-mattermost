@@ -224,8 +224,8 @@ func TestExecAndHelp(t *testing.T) {
 		{post{ID: "d2", ChannelID: "dm", RootID: "root1", Message: "#exec"}, "dm|root1|" + usage},
 		{post{ID: "d3", ChannelID: "dm", Message: "HELP"}, "dm||" + help},
 		{post{ID: "d4", ChannelID: "dm", Message: "@herdr help"}, "dm||" + help},
-		{post{ID: "d5", ChannelID: "dm", RootID: "root1", Message: "help"}, "dm|root1|" + help},
-		{post{ID: "d6", ChannelID: "dm", RootID: "root1", Message: "@herdr help"}, "dm|root1|" + help},
+		{post{ID: "d5", ChannelID: "dm", RootID: "root1", Message: "help"}, "dm|root1|" + ack}, // a bare help in a thread is a prompt
+		{post{ID: "d6", ChannelID: "dm", RootID: "root1", Message: "@herdr HELP"}, "dm|root1|" + help},
 		{post{ID: "c1", ChannelID: "ch1", Message: "@herdr #exec /compact"}, "ch1|c1|" + ack},
 		{post{ID: "c2", ChannelID: "ch1", RootID: "c1", Message: "@herdr help"}, "ch1|c1|" + help},
 		{post{ID: "c3", ChannelID: "ch1", Message: "help"}, ""}, // no mention in a channel: ignored
@@ -243,7 +243,7 @@ func TestExecAndHelp(t *testing.T) {
 			t.Errorf("%q: answer %q, want %q", c.p.Message, got, c.want)
 		}
 	}
-	if got := e.prompts(); got != "w1:p1|/clear\nw1:p2|/compact\n" {
+	if got := e.prompts(); got != "w1:p1|/clear\nw1:p1|help\nw1:p2|/compact\n" {
 		t.Fatalf("prompts = %q", got)
 	}
 }

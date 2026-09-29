@@ -11,7 +11,7 @@ Switch mirroring on for a pane and the bot opens a thread for it in your direct 
 - A thread reply starting with `#capture` also posts a screenshot of the pane into the thread. See [Screenshots](#screenshots).
 - A thread reply starting with `#exec` types the rest exactly as written, such as `#exec /clear` or `#exec /compact`, with the same acknowledgement and reply posting as a normal reply and no screenshot. Mattermost takes a message starting with `/` as its own slash command and never posts it, so `#exec` is how a slash command reaches the agent. `#exec` on its own gets a usage line.
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.
-- Sending `help`, with or without the bot's @mention, top-level or in a thread, gets the list of commands. Any other top-level DM message gets it too.
+- Sending `help` in the DM outside a thread gets the list of commands, as does any other top-level DM message except `list`. In a thread, write the bot's @mention followed by `help`, such as `@herdr help`; a bare `help` reply in a thread is typed into the agent like any other reply. The list marks `#capture` and `list` as DM only.
 
 Only the one Mattermost user named in `MM_USER` is obeyed: in the bot's DM, and in a channel linked to a pane when they @mention the bot. Everyone else, the bot itself, and bot, webhook or system posts, such as a channel header change, are ignored, except that someone else who @mentions the bot in a linked channel is told who controls it.
 

@@ -41,10 +41,10 @@ var catalog = map[string]map[string]string{
 		"settings.saved":  "Đã lưu cài đặt và khởi động lại daemon.",
 		"help": "**Các lệnh hỗ trợ**\n" +
 			"- Trả lời trong thread của một pane: gửi lệnh cho agent.\n" +
-			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`.\n" +
+			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`. Chỉ trong DM.\n" +
 			"- `#exec /command`: gõ đúng lệnh vào pane, không chụp màn hình, ví dụ gọi một skill, `/clear`, `/compact`.\n" +
-			"- `list`: xem các pane đang đẩy lên Mattermost (gửi ngoài thread).\n" +
-			"- `help`: hiện danh sách này.\n\n" +
+			"- `list`: xem các pane đang đẩy lên Mattermost (chỉ trong DM, gửi ngoài thread).\n" +
+			"- `help`: hiện danh sách này. Trong thread, gõ sau @mention của bot.\n\n" +
 			"Tin nhắn bắt đầu bằng `/` bị Mattermost hiểu là lệnh của nó, nên hãy dùng `#exec`.",
 		"exec.usage":     "Cách dùng: `#exec /command`, ví dụ `#exec /clear`.",
 		"list.none":      "Chưa có pane nào đẩy lên Mattermost. Chạy action bật/tắt Mattermost trên một pane herdr để bắt đầu.",
@@ -96,10 +96,10 @@ var catalog = map[string]map[string]string{
 		"settings.saved":  "Settings saved and the daemon restarted.",
 		"help": "**Supported commands**\n" +
 			"- Reply in a pane's thread: prompt its agent.\n" +
-			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`.\n" +
+			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`. DM only.\n" +
 			"- `#exec /command`: type exactly the command into the pane, without a screenshot, for example a skill, `/clear`, `/compact`.\n" +
-			"- `list`: list the mirrored panes (outside a thread).\n" +
-			"- `help`: show this list.\n\n" +
+			"- `list`: list the mirrored panes (DM only, outside a thread).\n" +
+			"- `help`: show this list. In a thread, write it after the bot's @mention.\n\n" +
 			"A message starting with `/` is taken by Mattermost as its own slash command, so use `#exec`.",
 		"exec.usage":     "Usage: `#exec /command`, for example `#exec /clear`.",
 		"list.none":      "No panes are mirrored. Run the Mattermost toggle action on a herdr pane to mirror it.",
