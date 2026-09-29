@@ -277,7 +277,7 @@ func (a *app) handlePost(p post, late bool) error {
 	}
 
 	if cmd, ok := captureCmd(p.Message); ok { // the rest is typed like any reply, then the screen is posted once it settles
-		defer func() { go a.capture(p.RootID) }()
+		defer func() { go a.capture(p.RootID, cmd) }()
 		if cmd == "" {
 			return nil
 		}
