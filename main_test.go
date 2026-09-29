@@ -144,6 +144,7 @@ case "$1 $2" in
 "plugin list")
   [ -e "$d/disabled" ] && on=false || on=true
   [ "$3 $4 $5" = "--plugin herdr-mattermost --json" ] && echo "{\"result\":{\"plugins\":[{\"plugin_id\":\"$4\",\"enabled\":$on}]}}" || echo '{"result":{"plugins":[]}}' ;;
+"agent send-keys") printf '%s|%s\n' "$3" "$4" >> "$d/keys.log" ;;
 "agent prompt")
   printf '%s|%s\n' "$3" "$4" >> "$d/prompts.log"
   if [ -e "$d/blocked" ]; then echo '{"error":{"code":"agent_blocked","message":"blocked"},"id":"x"}' >&2; exit 1; fi
