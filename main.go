@@ -441,7 +441,10 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		if uuid != "" && uuid != p.LastReply {
 			// ponytail: Prompted is kept after posting so a turn a background task resumes, which inherits
 			// the thread prompt, is posted too; a terminal prompt identical to the last thread reply is
-			// posted as well. Clear it per turn if that ever bites.
+			// posted as well. Clear it per turn if that ever bites. A resumed turn inherits the latest typed
+			// prompt, not the one that started the task, so a task started in the terminal that finishes
+			// after a thread reply is posted by mistake, and one started from the thread that finishes after
+			// a terminal prompt is kept off. Record which turn started each background task if that bites.
 			if p.Prompted != "" && slices.ContainsFunc(prompts, func(s string) bool { return sameText(s, p.Prompted) }) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
