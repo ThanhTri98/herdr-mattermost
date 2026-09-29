@@ -509,3 +509,29 @@ func TestConfigErrors(t *testing.T) {
 		t.Fatalf("readEnv = %v %v", env, err)
 	}
 }
+
+func TestStatus(t *testing.T) {
+	e := newTestEnv(t)
+	var out strings.Builder
+	if err := e.a.status(&out); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "daemon: not running") || !strings.Contains(s, "No panes are mirrored") {
+		t.Fatalf("status = %q", s)
+	}
+	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p2"] = &pane{Status: "idle", Agent: "claude", Cwd: "/src/app"}
+		return nil
+	})
+	out.Reset()
+	if err := e.a.status(&out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "w1:p2", "🟢 idle", "claude", "/src/app"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("status = %q, want %q", s, want)
+		}
+	}
+}

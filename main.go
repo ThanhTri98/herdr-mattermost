@@ -5,6 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
+//	herdr-mm status  popup pane: show the daemon and the mirrored panes, then wait for q or Esc
 package main
 
 import (
@@ -19,15 +20,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"unicode/utf8"
 )
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event|stop")
+		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event|stop|status")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -46,6 +49,10 @@ func main() {
 			err = a.event(os.Getenv("HERDR_PLUGIN_EVENT"), []byte(os.Getenv("HERDR_PLUGIN_EVENT_JSON")))
 		case "stop":
 			err = a.stop()
+		case "status":
+			if err = a.status(os.Stdout); err == nil {
+				waitQuit()
+			}
 		default:
 			err = fmt.Errorf("unknown command")
 		}
@@ -185,6 +192,65 @@ func (a *app) stop() error {
 	}
 	fmt.Println("daemon stopped")
 	return nil
+}
+
+// daemonPid returns the pid of the running daemon, or 0. It does not take the lock, which would make
+// a daemon starting at that moment think another one is running.
+// ponytail: trusts the pid in daemon.lock; a reused pid reads as running until the next daemon start.
+func (a *app) daemonPid() int {
+	var pid int
+	b, _ := os.ReadFile(filepath.Join(a.stateDir, "daemon.lock"))
+	if _, err := fmt.Sscan(string(b), &pid); err != nil || pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return 0
+	}
+	return pid
+}
+
+// status prints whether the daemon runs and the mirrored panes.
+func (a *app) status(w io.Writer) error {
+	if pid := a.daemonPid(); pid != 0 {
+		fmt.Fprintf(w, "Mattermost daemon: running (pid %d)\n\n", pid)
+	} else {
+		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
+	}
+	err := a.withState(func(panes map[string]*pane) error {
+		if len(panes) == 0 {
+			fmt.Fprintln(w, "No panes are mirrored. Run the toggle action on an agent pane to mirror it.")
+			return nil
+		}
+		ids := make([]string, 0, len(panes))
+		for id := range panes {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "PANE\tSTATUS\tAGENT\tDIRECTORY")
+		for _, id := range ids {
+			p := panes[id]
+			fmt.Fprintf(tw, "%s\t%s %s\t%s\t%s\n", id, emoji[p.Status], p.Status, p.Agent, p.Cwd)
+		}
+		return tw.Flush()
+	})
+	fmt.Fprint(w, "\nPress q or Esc to close.")
+	return err
+}
+
+// waitQuit reads keys until q or Esc. stty puts the terminal in raw-enough mode without a dependency.
+func waitQuit() {
+	stty := func(args ...string) {
+		cmd := exec.Command("stty", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Run()
+	}
+	stty("-icanon", "-echo", "min", "1")
+	defer stty("icanon", "echo")
+	b := make([]byte, 16)
+	for {
+		n, err := os.Stdin.Read(b)
+		if err != nil || bytes.ContainsAny(b[:n], "qQ\x1b") {
+			return
+		}
+	}
 }
 
 // pluginOn reports whether the herdr server is running with this plugin enabled.
