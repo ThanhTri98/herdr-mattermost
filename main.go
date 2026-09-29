@@ -440,7 +440,7 @@ func (a *app) sync(id string, p *pane) error {
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
 // once each. A reply is posted only when its turn was prompted from the thread: one of the turn's
-// prompts in the transcript is the text the daemon typed. Turns typed in the terminal stay off Mattermost.
+// prompts in the transcript is a recent text the daemon typed. Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
@@ -629,9 +629,9 @@ func lastReply(path string) (text, uuid string, prompts []string, err error) {
 				Content json.RawMessage
 			}
 		}
-		// A typed prompt starts a turn as a user entry whose content is a plain string (tool results are
-		// arrays, compaction summaries and task notifications are not typed); a prompt typed while the
-		// agent works is queued into the running turn as an attachment.
+		// A typed prompt starts a turn as a user entry whose content is a string or blocks without a
+		// tool_result (compaction summaries and task notifications are not typed); a prompt typed while
+		// the agent works is queued into the running turn as an attachment.
 		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
 			var s string
 			var blocks []block
