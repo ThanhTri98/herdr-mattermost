@@ -146,7 +146,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
 	os.MkdirAll(filepath.Dir(transcript), 0o755)
 	a := &app{mmURL: srv.URL, token: "tok", user: "alice", envPath: filepath.Join(dir, ".env"),
-		stateDir: state, herdrBin: filepath.Join(herdrDir, "herdr"), claudeDir: claude, pluginID: "herdr-mattermost"}
+		stateDir: state, herdrBin: filepath.Join(herdrDir, "herdr"), claudeDir: claude}
 	return &testEnv{a, mm, herdrDir, transcript}
 }
 

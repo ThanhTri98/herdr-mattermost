@@ -56,10 +56,10 @@ func main() {
 }
 
 type app struct {
-	mmURL, token, user                               string // from $HERDR_PLUGIN_CONFIG_DIR/.env
-	envPath, stateDir, herdrBin, claudeDir, pluginID string
-	botID, userID, dmID                              string // filled by connect
-	lastPost                                         int64  // create_at of the last DM post the daemon handled
+	mmURL, token, user                     string // from $HERDR_PLUGIN_CONFIG_DIR/.env
+	envPath, stateDir, herdrBin, claudeDir string
+	botID, userID, dmID                    string // filled by connect
+	lastPost                               int64  // create_at of the last DM post the daemon handled
 }
 
 func load() (*app, error) {
@@ -67,12 +67,9 @@ func load() (*app, error) {
 	if configDir == "" || stateDir == "" {
 		return nil, errors.New("HERDR_PLUGIN_CONFIG_DIR and HERDR_PLUGIN_STATE_DIR are not set; herdr-mm runs as a herdr plugin")
 	}
-	a := &app{envPath: filepath.Join(configDir, ".env"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR"), pluginID: os.Getenv("HERDR_PLUGIN_ID")}
+	a := &app{envPath: filepath.Join(configDir, ".env"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
 	if a.herdrBin == "" {
 		a.herdrBin = "herdr"
-	}
-	if a.pluginID == "" {
-		a.pluginID = "herdr-mattermost"
 	}
 	if a.claudeDir == "" {
 		home, err := os.UserHomeDir()
@@ -200,7 +197,7 @@ func (a *app) pluginOn() bool {
 	var list struct {
 		Result struct{ Plugins []struct{ Enabled bool } }
 	}
-	out, err = a.herdr("plugin", "list", "--plugin", a.pluginID, "--json")
+	out, err = a.herdr("plugin", "list", "--plugin", "herdr-mattermost", "--json")
 	return err == nil && json.Unmarshal(out, &list) == nil && len(list.Result.Plugins) == 1 && list.Result.Plugins[0].Enabled
 }
 
