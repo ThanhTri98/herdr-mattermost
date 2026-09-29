@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -115,6 +116,7 @@ case "$1 $2" in
 "agent get") cat "$d/agent.json" ;;
 "agent read") cat "$d/screen.txt" ;;
 "agent list") cat "$d/agents.json" 2>/dev/null || echo '{"result":{"agents":[]}}' ;;
+"pane list"|"tab list"|"workspace list") cat "$d/$1s.json" 2>/dev/null || echo '{"result":{}}' ;;
 "status server") [ -e "$d/stopped" ] && echo '{"running":false}' || echo '{"running":true}' ;;
 "plugin list")
   [ -e "$d/disabled" ] && on=false || on=true
@@ -266,13 +268,19 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("dialog post = %q", d.Message)
 	}
 
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
 	if err := e.a.toggle("w1:p1"); err != nil { // switch off
 		t.Fatal(err)
 	}
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if len(posts) != 4 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
-		t.Fatalf("unshare should only mark the root post: %+v", posts)
+	if len(posts) != 5 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
+		t.Fatalf("unshare should mark the root post and post one notice: %+v", posts)
+	}
+	want := "⚪ Mirroring stopped for **api** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	if n := posts[4]; n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
+		t.Fatalf("stop notice = %+v, want top-level %q", n, want)
 	}
 }
 
@@ -664,6 +672,22 @@ func TestListRows(t *testing.T) {
 	}
 }
 
+func TestPaneNames(t *testing.T) {
+	panes := []herdrPane{
+		{PaneID: "w1:p1", TabID: "w1:t1", WorkspaceID: "w1"},
+		{PaneID: "w2:p1", TabID: "w2:t1", WorkspaceID: "w2"},
+		{PaneID: "w2:p2", TabID: "w2:t2", WorkspaceID: "w2"},
+		{PaneID: "w2:p3", TabID: "w2:t2", WorkspaceID: "w2", Label: "mybox"},
+	}
+	tabs := []herdrTab{{"w1:t1", "1"}, {"w2:t1", "1"}, {"w2:t2", "second"}}
+	workspaces := []herdrWorkspace{{"w1", "solo", 1}, {"w2", "multi", 2}}
+	got := paneNames(panes, tabs, workspaces)
+	want := map[string]string{"w1:p1": "solo", "w2:p1": "multi / 1", "w2:p2": "multi / second", "w2:p3": "mybox"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("paneNames = %v, want %v", got, want)
+	}
+}
+
 func TestStatus(t *testing.T) {
 	e := newTestEnv(t)
 	var out strings.Builder
@@ -676,6 +700,7 @@ func TestStatus(t *testing.T) {
 	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"id":"cli:agent:list","result":{"type":"agent_list","agents":[
 		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","label":"web"}]}}`), 0o644)
 	rows, err := e.a.rows()
 	if err != nil {
 		t.Fatal(err)
@@ -692,7 +717,7 @@ func TestStatus(t *testing.T) {
 	}
 	lines := strings.Split(s, "\n")
 	head, row := lines[2], lines[3]
-	for col, cell := range map[string]string{"PANE": "w1:p2", "AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
+	for col, cell := range map[string]string{"NAME": "web", "PANE": "w1:p2", "AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
 		if strings.Index(head, col) != strings.Index(row, cell) {
 			t.Fatalf("%s is not above %s:\n%s\n%s", col, cell, head, row)
 		}
