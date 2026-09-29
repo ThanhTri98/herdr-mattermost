@@ -552,15 +552,22 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
 		rs, _, err := replies(a.transcript(info))
-		if err != nil || len(rs) == 0 {
+		if err != nil {
 			return err
 		}
 		// Every turn since the last one handled is posted, so a thread reply sent while the agent was
-		// still answering the previous one doesn't hide that answer. Without a known last turn, as on the
-		// first sync or a new transcript, only the newest is considered so old history stays out.
-		next := rs[len(rs)-1:]
+		// still answering the previous one doesn't hide that answer. A transcript without turns yet, as
+		// when a pane is shared before its first prompt or /clear starts a new one, has all its later
+		// turns considered. When the last turn handled is not in a transcript that has turns, as after
+		// resuming another session, only the newest is considered so old history stays out.
+		if len(rs) == 0 {
+			p.LastReply = ""
+		}
+		next := rs
 		if i := slices.IndexFunc(rs, func(r reply) bool { return r.uuid == p.LastReply }); i >= 0 {
 			next = rs[i+1:]
+		} else if p.LastReply != "" {
+			next = rs[len(rs)-1:]
 		}
 		for _, r := range next {
 			// ponytail: Prompted is kept after posting so a turn a background task resumes, which inherits
