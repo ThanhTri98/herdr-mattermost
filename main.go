@@ -282,7 +282,7 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
-	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last posted
+	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
 }
