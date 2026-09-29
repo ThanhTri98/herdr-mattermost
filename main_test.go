@@ -177,6 +177,11 @@ func assistant(uuid, msgID, blockType, text string, sidechain bool) string {
 	return string(b)
 }
 
+func typed(uuid, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "uuid": uuid, "message": map[string]any{"role": "user", "content": text}})
+	return string(b)
+}
+
 func (e *testEnv) event(t *testing.T, name, pane string) {
 	t.Helper()
 	raw := fmt.Sprintf(`{"event":%q,"data":{"pane_id":%q,"workspace_id":"w1","agent_status":"idle"}}`, strings.ReplaceAll(name, ".", "_"), pane)
@@ -209,7 +214,18 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("root post should be edited to working in place: %+v", posts)
 	}
 
+	e.appendTranscript(t, typed("t1", "typed in the terminal"), assistant("t2", "mt", "text", "terminal answer", false))
+	e.setAgent(t, "idle")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts = e.mm.snapshot(); len(posts) != 1 || !strings.Contains(posts[0].Message, "idle") {
+		t.Fatalf("a turn typed in the terminal must not be posted: %+v", posts)
+	}
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "fix the\nbug", CreateAt: 100}))
+	e.setAgent(t, "working")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.appendTranscript(t,
+		typed("u1", "fix the\nbug"),
 		assistant("u2", "m2", "text", "Let me look.", false),
 		assistant("u3", "m2", "tool_use", "", false),
 		`{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","content":"`+strings.Repeat("x", 100000)+`"}]}}`,
@@ -221,11 +237,11 @@ func TestStatusToPostFlow(t *testing.T) {
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.event(t, "pane.agent_status_changed", "w1:p1") // a late duplicate hook must not repost
 	posts = e.mm.snapshot()
-	if len(posts) != 2 || !strings.Contains(posts[0].Message, "done") {
-		t.Fatalf("want root edited to done plus one reply, got %+v", posts)
+	if len(posts) != 3 || !strings.Contains(posts[0].Message, "done") || !strings.Contains(posts[1].Message, "Received") {
+		t.Fatalf("want root edited to done, the acknowledgement and one reply, got %+v", posts)
 	}
-	if posts[1].RootID != posts[0].ID || posts[1].Message != "Final answer.\n\nSecond block." {
-		t.Fatalf("reply = %+v", posts[1])
+	if posts[2].RootID != posts[0].ID || posts[2].Message != "Final answer.\n\nSecond block." {
+		t.Fatalf("reply = %+v", posts[2])
 	}
 
 	e.setAgent(t, "blocked")
@@ -234,10 +250,10 @@ func TestStatusToPostFlow(t *testing.T) {
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if len(posts) != 3 {
+	if len(posts) != 4 {
 		t.Fatalf("want one dialog post, got %+v", posts)
 	}
-	d := posts[2]
+	d := posts[3]
 	if d.RootID != posts[0].ID || !strings.HasPrefix(d.Message, "@alice") || !strings.Contains(d.Message, "Do you want to proceed?") || strings.Contains(d.Message, "earlier conversation") {
 		t.Fatalf("dialog post = %q", d.Message)
 	}
@@ -247,7 +263,7 @@ func TestStatusToPostFlow(t *testing.T) {
 	}
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if len(posts) != 3 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
+	if len(posts) != 4 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
 		t.Fatalf("unshare should only mark the root post: %+v", posts)
 	}
 }
@@ -261,7 +277,8 @@ func TestReplyPostedWhenRootEditFails(t *testing.T) {
 	e.mm.mu.Lock()
 	e.mm.failPatch = true
 	e.mm.mu.Unlock()
-	e.appendTranscript(t, assistant("u1", "m1", "text", "Done.", false))
+	e.a.withState(func(panes map[string]*pane) error { panes["w1:p1"].Prompted = "go"; return nil })
+	e.appendTranscript(t, typed("u0", "go"), assistant("u1", "m1", "text", "Done.", false))
 	e.setAgent(t, "done")
 	if err := e.a.event("pane.agent_status_changed", []byte(`{"data":{"pane_id":"w1:p1"}}`)); err == nil || !strings.Contains(err.Error(), "edit time limit") {
 		t.Fatalf("event = %v, want the edit error", err)
@@ -310,13 +327,13 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 }
 
 func TestLastReplyAndTruncate(t *testing.T) {
-	if text, uuid, err := lastReply(""); text != "" || uuid != "" || err != nil {
-		t.Fatalf("no transcript: %q %q %v", text, uuid, err)
+	if text, uuid, prompt, err := lastReply(""); text != "" || uuid != "" || prompt != "" || err != nil {
+		t.Fatalf("no transcript: %q %q %q %v", text, uuid, prompt, err)
 	}
 	e := newTestEnv(t)
 	e.appendTranscript(t, `{"type":"user","message":{"content":"a plain string"}}`, assistant("u1", "m1", "text", "hi", false), "not json")
-	if text, uuid, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || err != nil {
-		t.Fatalf("got %q %q %v", text, uuid, err)
+	if text, uuid, prompt, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || prompt != "a plain string" || err != nil {
+		t.Fatalf("got %q %q %q %v", text, uuid, prompt, err)
 	}
 	long := strings.Repeat("é", maxPost+10)
 	if got := truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {

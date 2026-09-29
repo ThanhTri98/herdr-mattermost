@@ -5,7 +5,7 @@ herdr plugin that mirrors agent panes to Mattermost and relays replies back.
 Switch mirroring on for a pane and the bot opens a thread for it in your direct message with the bot:
 
 - The thread's root post shows the agent's live status (🟢 idle, ⏳ working, ✅ done, ✋ blocked, ❔ unknown) and is edited in place.
-- When the agent finishes a turn, its last reply is posted into the thread.
+- When the agent finishes a turn you started from the thread, its last reply is posted into the thread. Turns you start by typing in the terminal stay off Mattermost: the plugin posts a reply only when the turn's prompt in the transcript is the thread reply it typed in.
 - When the agent stops on an approval or question dialog, the dialog is posted into the thread and you are @mentioned. Answer the dialog on the machine; approving from Mattermost is not supported.
 - A reply you write in the thread is typed into that agent, like `herdr agent prompt`, and the bot acknowledges it in the thread right away. A reply sent while the bot was disconnected is typed in when it reconnects, with a note in the thread saying it was delivered late.
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.

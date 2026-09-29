@@ -232,6 +232,8 @@ func (a *app) handlePost(p post, late bool) error {
 		for id, pp := range panes {
 			if pp.RootID == p.RootID {
 				paneID = id
+				// Recorded before typing so the turn's end cannot beat it; marks the turn for posting.
+				pp.Prompted = p.Message
 			}
 		}
 		return nil

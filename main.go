@@ -282,6 +282,7 @@ type pane struct {
 	Cwd        string `json:"cwd"`
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last posted
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
+	Prompted   string `json:"prompted,omitempty"`    // thread reply last typed into the agent, until its turn is posted
 }
 
 // withState runs fn on the mirrored panes under an exclusive file lock, then saves them. The lock
@@ -346,7 +347,7 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
-		_, p.LastReply, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
+		_, p.LastReply, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
 		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(id, p)); err != nil {
 			return err
 		}
@@ -423,20 +424,24 @@ func (a *app) sync(id string, p *pane) error {
 }
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
-// once each.
+// once each. A reply is posted only when its turn was prompted from the thread: the turn's prompt in
+// the transcript is the text the daemon typed. Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
-		text, uuid, err := lastReply(a.transcript(info))
+		text, uuid, prompt, err := lastReply(a.transcript(info))
 		if err != nil {
 			return err
 		}
 		if uuid != "" && uuid != p.LastReply {
-			if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
-				return err
+			if p.Prompted != "" && sameText(prompt, p.Prompted) {
+				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
+					return err
+				}
+				p.Prompted = ""
 			}
 			p.LastReply = uuid
 		}
@@ -554,19 +559,24 @@ func (a *app) transcript(info agentInfo) string {
 	return ""
 }
 
-// lastReply returns the text of the newest main-thread assistant message in a Claude transcript and
-// the uuid of its last entry. Claude writes one entry per content block, so text is gathered by
-// message id.
-func lastReply(path string) (text, uuid string, err error) {
+// sameText compares prompts ignoring whitespace differences typing may introduce.
+func sameText(a, b string) bool {
+	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
+}
+
+// lastReply returns the text of the newest main-thread assistant message in a Claude transcript, the
+// uuid of its last entry and the prompt typed before it. Claude writes one entry per content block,
+// so text is gathered by message id.
+func lastReply(path string) (text, uuid, prompt string, err error) {
 	if path == "" {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	defer f.Close()
-	var msgID string
+	var msgID, lastPrompt string
 	var texts []string
 	r := bufio.NewReader(f) // not a Scanner: tool results make lines longer than its buffer
 	for {
@@ -574,15 +584,25 @@ func lastReply(path string) (text, uuid string, err error) {
 		var e struct {
 			Type        string
 			IsSidechain bool
+			IsMeta      bool
 			UUID        string
 			Message     struct {
 				ID      string
-				Content []struct{ Type, Text string }
+				Content json.RawMessage
+			}
+		}
+		// A typed prompt is a user entry whose content is a plain string; tool results are arrays.
+		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta {
+			var s string
+			if json.Unmarshal(e.Message.Content, &s) == nil {
+				lastPrompt = s
 			}
 		}
 		if bytes.Contains(line, []byte(`"assistant"`)) && json.Unmarshal(line, &e) == nil && e.Type == "assistant" && !e.IsSidechain {
+			var content []struct{ Type, Text string }
+			json.Unmarshal(e.Message.Content, &content)
 			var t []string
-			for _, c := range e.Message.Content {
+			for _, c := range content {
 				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
 					t = append(t, c.Text)
 				}
@@ -591,14 +611,14 @@ func lastReply(path string) (text, uuid string, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid = append(texts, t...), e.UUID
+				texts, uuid, prompt = append(texts, t...), e.UUID, lastPrompt
 			}
 		}
 		if readErr == io.EOF {
-			return strings.Join(texts, "\n\n"), uuid, nil
+			return strings.Join(texts, "\n\n"), uuid, prompt, nil
 		}
 		if readErr != nil {
-			return "", "", readErr
+			return "", "", "", readErr
 		}
 	}
 }
