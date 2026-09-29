@@ -283,9 +283,17 @@ func (a *app) topLevel(msg string) string {
 	}
 	var lines []string
 	a.withState(func(panes map[string]*pane) error {
-		for id, p := range panes {
-			lines = append(lines, fmt.Sprintf("- %s **%s** · %s · `%s` · pane `%s` · [thread](%s/_redirect/pl/%s)",
-				emoji[p.Status], p.Status, p.Agent, baseName(p.Cwd), id, a.mmURL, p.RootID))
+		var ps []*pane
+		for _, id := range slices.Sorted(maps.Keys(panes)) {
+			ps = append(ps, panes[id])
+		}
+		for i, name := range numbered(ps, func(p *pane) string { return p.Name }) {
+			p := ps[i]
+			if p.Name == "" {
+				name = ""
+			}
+			lines = append(lines, fmt.Sprintf("- %s **%s** · %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
+				emoji[p.Status], p.Status, bold(name), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID))
 		}
 		return nil
 	})

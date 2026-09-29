@@ -242,14 +242,21 @@ func (a *app) rows() ([]row, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := listRows(r.Result.Agents, panes)
-	names, err := a.names()
+	names, hidden, err := a.names()
 	if err != nil {
 		return nil, err
 	}
-	for i := range rows {
-		rows[i].Name = names[rows[i].ID]
+	var rows []row
+	for _, r := range listRows(r.Result.Agents, panes) {
+		if !hidden[r.ID] {
+			r.Name = names[r.ID]
+			rows = append(rows, r)
+		}
 	}
+	for i, n := range numbered(rows, func(r row) string { return r.Name }) {
+		rows[i].Name = n
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return rows, nil
 }
 
@@ -272,8 +279,8 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// names maps each pane id to the name herdr shows for it.
-func (a *app) names() (map[string]string, error) {
+// names maps each pane id to the name herdr shows for it, and marks the panes to leave out of the popup.
+func (a *app) names() (map[string]string, map[string]bool, error) {
 	var r struct {
 		Result struct {
 			Panes      []herdrPane
@@ -287,15 +294,17 @@ func (a *app) names() (map[string]string, error) {
 			err = json.Unmarshal(out, &r)
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces), nil
+	names, hidden := paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces)
+	return names, hidden, nil
 }
 
 // paneNames names a pane by its own label when renamed, otherwise by its workspace's label, followed
-// by the tab's label when the workspace has more than one tab.
-func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) map[string]string {
+// by the tab's label when the workspace has more than one tab. It marks hidden the panes of the
+// workspaces firstmate opens for its workers, whose labels start with "└ ".
+func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) (map[string]string, map[string]bool) {
 	tabLabel := map[string]string{}
 	for _, t := range tabs {
 		tabLabel[t.TabID] = t.Label
@@ -304,9 +313,10 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 	for _, w := range workspaces {
 		ws[w.WorkspaceID] = w
 	}
-	names := map[string]string{}
+	names, hidden := map[string]string{}, map[string]bool{}
 	for _, p := range panes {
 		w := ws[p.WorkspaceID]
+		hidden[p.PaneID] = strings.HasPrefix(w.Label, "└ ")
 		switch {
 		case p.Label != "":
 			names[p.PaneID] = p.Label
@@ -316,7 +326,22 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 			names[p.PaneID] = w.Label
 		}
 	}
-	return names
+	return names, hidden
+}
+
+// numbered returns the names of xs, sorted by id by the caller, with " #2", " #3" added to the
+// second and later of those that share a name.
+func numbered[T any](xs []T, name func(T) string) []string {
+	seen := map[string]int{}
+	var out []string
+	for _, x := range xs {
+		n := name(x)
+		if seen[n]++; seen[n] > 1 {
+			n += " #" + strconv.Itoa(seen[n])
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // listRows marks which of herdr's agents are mirrored.
@@ -342,7 +367,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, " \tNAME\tPANE\tAGENT\tDIRECTORY\tSTATUS\tMIRRORED")
+	fmt.Fprintln(tw, " \tNAME\tAGENT\tSTATUS\tMIRRORED")
 	for i, r := range rows {
 		cursor, on := " ", ""
 		if i == sel {
@@ -351,7 +376,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		if r.Mirrored {
 			on = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], r.Status, on)
 	}
 	return tw.Flush()
 }
@@ -396,7 +421,7 @@ func (a *app) popup() {
 				sel = max(min(sel+1, len(rows)-1), 0)
 			case "\r", "\n", " ":
 				if sel < len(rows) {
-					msg = a.popupToggle(rows[sel].ID)
+					msg = a.popupToggle(rows[sel])
 				}
 			}
 		}
@@ -404,14 +429,14 @@ func (a *app) popup() {
 }
 
 // popupToggle toggles a pane as the toggle action does and returns the error to show, if any.
-func (a *app) popupToggle(id string) string {
-	fmt.Printf("\n\nToggling %s...", id)
-	err := a.toggle(id)
+func (a *app) popupToggle(r row) string {
+	fmt.Printf("\n\nToggling %s...", r.Name)
+	err := a.toggle(r.ID)
 	if err == nil {
 		err = a.start()
 	}
 	if err != nil {
-		return fmt.Sprintf("toggle %s: %v", id, err)
+		return fmt.Sprintf("toggle %s: %v", r.Name, err)
 	}
 	return ""
 }
@@ -531,7 +556,7 @@ func (a *app) toggle(id string) error {
 		if p := panes[id]; p != nil {
 			delete(panes, id)
 			p.Status = "off"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
+			return errors.Join(a.patchPost(p.RootID, rootMessage(p)), a.postStopped(p))
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -541,8 +566,10 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
+		names, _, _ := a.names()
+		p.Name = names[id]
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
-		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(id, p)); err != nil {
+		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(p)); err != nil {
 			return err
 		}
 		panes[id] = p
@@ -584,11 +611,11 @@ func (a *app) event(name string, raw []byte) error {
 		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
+			return errors.Join(a.patchPost(p.RootID, rootMessage(p)), a.postStopped(p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.sync(id, p))
+			return a.sync(id, p)
 		}
 		return a.sync(id, p)
 	})
@@ -605,17 +632,17 @@ func (a *app) sync(id string, p *pane) error {
 	if err != nil {
 		return err
 	}
-	prev := p.Status
+	prev, prevName := p.Status, p.Name
 	p.Status = info.Status
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
 	}
-	if names, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
+	if names, _, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
 		p.Name = names[id]
 	}
 	var patchErr error
-	if p.Status != prev {
-		patchErr = a.patchPost(p.RootID, rootMessage(id, p))
+	if p.Status != prev || p.Name != prevName {
+		patchErr = a.patchPost(p.RootID, rootMessage(p))
 	}
 	return errors.Join(patchErr, a.postNews(id, p, info))
 }
@@ -693,8 +720,8 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 
 var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
 
-func rootMessage(id string, p *pane) string {
-	head := fmt.Sprintf("%s **%s** · %s · `%s` · pane `%s`", emoji[p.Status], p.Status, p.Agent, baseName(p.Cwd), id)
+func rootMessage(p *pane) string {
+	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], p.Status, bold(p.Name), p.Agent, baseName(p.Cwd))
 	switch p.Status {
 	case "off":
 		return head + "\n_Mirroring stopped._"
@@ -706,18 +733,23 @@ func rootMessage(id string, p *pane) string {
 
 // postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
 // the root post is only edited, which notifies nobody.
-func (a *app) postStopped(id string, p *pane) error {
-	what, name := "Mirroring stopped", ""
+func (a *app) postStopped(p *pane) error {
+	what := "Mirroring stopped"
 	if p.Status == "closed" {
 		what = "Pane closed, mirroring stopped"
 	}
-	if p.Name != "" {
-		name = "**" + p.Name + "** · "
-	}
-	msg := fmt.Sprintf("%s %s for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
-		emoji[p.Status], what, name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
+	msg := fmt.Sprintf("%s %s for %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
+		emoji[p.Status], what, bold(p.Name), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
 	_, err := a.createPost(p.ChannelID, "", msg)
 	return err
+}
+
+// bold formats a pane name to lead a " · " list, or returns "" for a pane with no name yet.
+func bold(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "**" + name + "** · "
 }
 
 func baseName(path string) string {

@@ -216,10 +216,13 @@ func TestStatusToPostFlow(t *testing.T) {
 	if len(posts) != 1 || posts[0].ChannelID != "dm" || posts[0].RootID != "" {
 		t.Fatalf("want one root post in the DM, got %+v", posts)
 	}
-	for _, want := range []string{"idle", "claude", "my_proj.x", "w1:p1"} {
+	for _, want := range []string{"idle", "claude", "my_proj.x"} {
 		if !strings.Contains(posts[0].Message, want) {
 			t.Errorf("root post %q lacks %q", posts[0].Message, want)
 		}
+	}
+	if strings.Contains(posts[0].Message, "w1:p1") {
+		t.Errorf("root post %q shows the pane id", posts[0].Message)
 	}
 
 	e.setAgent(t, "working")
@@ -287,7 +290,7 @@ func TestStatusToPostFlow(t *testing.T) {
 	if len(posts) != 5 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
 		t.Fatalf("unshare should mark the root post and post one notice: %+v", posts)
 	}
-	want := "⚪ Mirroring stopped for **api** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	want := "⚪ Mirroring stopped for **api** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
 	if n := posts[4]; n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
 		t.Fatalf("stop notice = %+v, want top-level %q", n, want)
 	}
@@ -330,8 +333,8 @@ func TestPaneMovedKeepsThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || !strings.Contains(posts[0].Message, "`w2:p1`") {
-		t.Fatalf("root post should name the new pane id: %+v", posts)
+	if len(posts) != 1 || strings.Contains(posts[0].Message, "w2:p1") {
+		t.Fatalf("root post should not show the pane id: %+v", posts)
 	}
 	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "go on", CreateAt: 100}))
 	if got := e.prompts(); got != "w2:p1|go on\n" {
@@ -356,7 +359,7 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 	if !strings.Contains(posts[0].Message, "Pane closed") {
 		t.Fatalf("root = %q", posts[0].Message)
 	}
-	want := "⚫ Pane closed, mirroring stopped for **web** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	want := "⚫ Pane closed, mirroring stopped for **web** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
 	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
 		t.Fatalf("close notice = %+v, want one top-level %q", posts, want)
 	}
@@ -387,7 +390,7 @@ func TestStopNoticePostedWhenRootEditFails(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "edit time limit") {
 			t.Fatalf("%s = %v, want the edit error", stop, err)
 		}
-		if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "topped for pane `w1:p1`") {
+		if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "topped for ") || strings.Contains(posts[1].Message, "w1:p1") {
 			t.Fatalf("%s: the stop notice must be posted even when the root edit fails: %+v", stop, posts)
 		}
 	}
@@ -641,9 +644,18 @@ func TestReplyPromptsAgent(t *testing.T) {
 		t.Fatalf("blocked answer = %+v", posts)
 	}
 
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p1"].Name = "web"
+		panes["w2:p1"] = &pane{RootID: "root2", Status: "idle", Agent: "claude", Name: "web"}
+		panes["w3:p1"] = &pane{RootID: "root3", Status: "idle", Agent: "claude"}
+		return nil
+	})
 	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
-	if len(posts) != 3 || posts[2].RootID != "" || !strings.Contains(posts[2].Message, "w1:p1") || !strings.Contains(posts[2].Message, "/_redirect/pl/root1") {
+	m := posts[len(posts)-1].Message
+	if len(posts) != 3 || posts[2].RootID != "" || strings.Contains(m, "w1:p1") || strings.Contains(m, "pane `") ||
+		!strings.Contains(m, "**web** · claude · `proj` · [thread](") || !strings.Contains(m, "**web #2** · claude · `?` · [thread](") ||
+		!strings.Contains(m, "🟢 **idle** · claude · `?`") || !strings.Contains(m, "/_redirect/pl/root1") {
 		t.Fatalf("list answer = %+v", posts)
 	}
 }
@@ -834,10 +846,22 @@ func TestPaneNames(t *testing.T) {
 	}
 	tabs := []herdrTab{{"w1:t1", "1"}, {"w2:t1", "1"}, {"w2:t2", "second"}}
 	workspaces := []herdrWorkspace{{"w1", "solo", 1}, {"w2", "multi", 2}}
-	got := paneNames(panes, tabs, workspaces)
-	want := map[string]string{"w1:p1": "solo", "w2:p1": "multi / 1", "w2:p2": "multi / second", "w2:p3": "mybox"}
+	panes = append(panes, herdrPane{PaneID: "w3:p1", TabID: "w3:t1", WorkspaceID: "w3"})
+	workspaces = append(workspaces, herdrWorkspace{"w3", "└ worker", 1})
+	got, hidden := paneNames(panes, tabs, workspaces)
+	want := map[string]string{"w1:p1": "solo", "w2:p1": "multi / 1", "w2:p2": "multi / second", "w2:p3": "mybox", "w3:p1": "└ worker"}
 	if !maps.Equal(got, want) {
 		t.Fatalf("paneNames = %v, want %v", got, want)
+	}
+	if !maps.Equal(hidden, map[string]bool{"w1:p1": false, "w2:p1": false, "w2:p2": false, "w2:p3": false, "w3:p1": true}) {
+		t.Fatalf("hidden = %v", hidden)
+	}
+}
+
+func TestNumbered(t *testing.T) {
+	got := numbered([]string{"a", "b", "a", "", "a", ""}, func(s string) string { return s })
+	if want := []string{"a", "b", "a #2", "", "a #3", " #2"}; !slices.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
 	}
 }
 
@@ -852,25 +876,43 @@ func TestStatus(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"id":"cli:agent:list","result":{"type":"agent_list","agents":[
-		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"}]}}`), 0o644)
-	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","label":"web"}]}}`), 0o644)
+		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"},
+		{"agent":"codex","agent_status":"working","cwd":"/src/b","pane_id":"w1:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/src/c","pane_id":"w2:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/src/d","pane_id":"w3:p1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","label":"web"},
+		{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","label":"zed"},
+		{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2","label":"web"},
+		{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"a","tab_count":1},
+		{"workspace_id":"w2","label":"b","tab_count":1},{"workspace_id":"w3","label":"└ worker","tab_count":1}]}}`), 0o644)
 	rows, err := e.a.rows()
 	if err != nil {
 		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range rows {
+		names = append(names, r.Name+"="+r.ID)
+	}
+	if want := []string{"web=w1:p2", "web #2=w2:p1", "zed=w1:p1"}; !slices.Equal(names, want) {
+		t.Fatalf("rows = %q, want %q", names, want)
 	}
 	out.Reset()
 	if err := e.a.status(&out, rows, 0); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
-	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "w1:p2", "🟢 idle", "claude", "/src/app"} {
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "🟢 idle", "claude"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("status = %q, want %q", s, want)
 		}
 	}
+	if strings.Contains(s, "w1:p2") || strings.Contains(s, "/src/app") || strings.Contains(s, "DIRECTORY") || strings.Contains(s, "PANE") {
+		t.Fatalf("status shows an id or directory: %q", s)
+	}
 	lines := strings.Split(s, "\n")
 	head, row := lines[2], lines[3]
-	for col, cell := range map[string]string{"NAME": "web", "PANE": "w1:p2", "AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
+	for col, cell := range map[string]string{"NAME": "web", "AGENT": "claude", "STATUS": "🟢"} {
 		if strings.Index(head, col) != strings.Index(row, cell) {
 			t.Fatalf("%s is not above %s:\n%s\n%s", col, cell, head, row)
 		}
