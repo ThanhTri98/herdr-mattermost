@@ -277,7 +277,13 @@ func TestReplyPostedWhenRootEditFails(t *testing.T) {
 	e.mm.mu.Lock()
 	e.mm.failPatch = true
 	e.mm.mu.Unlock()
-	e.a.withState(func(panes map[string]*pane) error { panes["w1:p1"].Prompted = "go"; return nil })
+	path := filepath.Join(e.a.stateDir, "panes.json")
+	var state map[string]map[string]any
+	b, _ := os.ReadFile(path)
+	json.Unmarshal(b, &state)
+	state["w1:p1"]["prompted"] = "go" // a single reply, as saved before prompted became a list
+	b, _ = json.Marshal(state)
+	os.WriteFile(path, b, 0o600)
 	e.appendTranscript(t, typed("u0", "go"), assistant("u1", "m1", "text", "Done.", false))
 	e.setAgent(t, "done")
 	if err := e.a.event("pane.agent_status_changed", []byte(`{"data":{"pane_id":"w1:p1"}}`)); err == nil || !strings.Contains(err.Error(), "edit time limit") {
@@ -372,8 +378,8 @@ func TestThreadPromptTranscriptShapes(t *testing.T) {
 	}
 }
 
-// TestPromptedFollowsThread posts turns resumed by a background task and keeps a failed prompt from
-// taking over the thread's prompt.
+// TestPromptedFollowsThread posts turns resumed by a background task and every recent thread reply's
+// turn, and keeps a failed prompt or a terminal prompt with an image from taking over the thread's.
 func TestPromptedFollowsThread(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "working")
@@ -404,6 +410,17 @@ func TestPromptedFollowsThread(t *testing.T) {
 
 	e.appendTranscript(t, typed("t5", "yes"), assistant("t6", "m3", "text", "terminal answer", false))
 	idle("All tests pass.")
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "check the logs", CreateAt: 102}))
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "and the config", CreateAt: 103}))
+	e.appendTranscript(t, typed("t7", "check the logs"), assistant("t8", "m4", "text", "Logs are clean.", false))
+	idle("Logs are clean.")
+	e.appendTranscript(t, typed("t9", "and the config"), assistant("t10", "m5", "text", "Config is fine.", false))
+	idle("Config is fine.")
+
+	e.appendTranscript(t, `{"type":"user","uuid":"t11","imagePasteIds":[1],"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}},{"type":"text","text":"why does this fail?"}]}}`,
+		assistant("t12", "m6", "text", "It fails because of the image.", false))
+	idle("Config is fine.")
 }
 
 func TestLastReplyAndTruncate(t *testing.T) {

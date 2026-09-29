@@ -227,13 +227,15 @@ func (a *app) handlePost(p post, late bool) error {
 		return nil
 	}
 
-	var paneID, prev string
+	var paneID string
+	var prev recent
 	a.withState(func(panes map[string]*pane) error {
 		for id, pp := range panes {
 			if pp.RootID == p.RootID {
 				paneID, prev = id, pp.Prompted
 				// Recorded before typing so the turn's end cannot beat it; marks the turn for posting.
-				pp.Prompted = p.Message
+				pp.Prompted = append(pp.Prompted, p.Message)
+				pp.Prompted = pp.Prompted[max(0, len(pp.Prompted)-5):]
 			}
 		}
 		return nil
@@ -244,7 +246,7 @@ func (a *app) handlePost(p post, late bool) error {
 	log.Printf("prompt %s: %q", paneID, p.Message)
 	if _, err := a.herdr("agent", "prompt", paneID, p.Message); err != nil {
 		a.withState(func(panes map[string]*pane) error {
-			if pp := panes[paneID]; pp != nil && pp.Prompted == p.Message {
+			if pp := panes[paneID]; pp != nil && len(pp.Prompted) > 0 && pp.Prompted[len(pp.Prompted)-1] == p.Message {
 				pp.Prompted = prev
 			}
 			return nil

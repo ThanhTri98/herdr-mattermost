@@ -284,7 +284,20 @@ type pane struct {
 	Cwd        string `json:"cwd"`
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last posted
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
-	Prompted   string `json:"prompted,omitempty"`    // thread reply last typed into the agent
+	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
+}
+
+// recent is the last few thread replies typed into a pane, oldest first. panes.json written before
+// it was a list holds a single string.
+type recent []string
+
+func (r *recent) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*r = recent{s}
+		return nil
+	}
+	return json.Unmarshal(b, (*[]string)(r))
 }
 
 // withState runs fn on the mirrored panes under an exclusive file lock, then saves them. The lock
@@ -440,12 +453,14 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		}
 		if uuid != "" && uuid != p.LastReply {
 			// ponytail: Prompted is kept after posting so a turn a background task resumes, which inherits
-			// the thread prompt, is posted too; a terminal prompt identical to the last thread reply is
+			// the thread prompt, is posted too; a terminal prompt identical to a recent thread reply is
 			// posted as well. Clear it per turn if that ever bites. A resumed turn inherits the latest typed
 			// prompt, not the one that started the task, so a task started in the terminal that finishes
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
-			if p.Prompted != "" && slices.ContainsFunc(prompts, func(s string) bool { return sameText(s, p.Prompted) }) {
+			if slices.ContainsFunc(prompts, func(s string) bool {
+				return strings.TrimSpace(s) != "" && slices.ContainsFunc(p.Prompted, func(q string) bool { return sameText(s, q) })
+			}) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
 				}
@@ -574,6 +589,9 @@ func sameText(a, b string) bool {
 // pasteMarker matches the tags Claude wraps pasted text in when it records a prompt.
 var pasteMarker = regexp.MustCompile(`</?pasted_content id="[^"]*">`)
 
+// block is a content block of a transcript message.
+type block struct{ Type, Text string }
+
 // tag returns the text inside the first <name>...</name> in s.
 func tag(s, name string) string {
 	_, v, _ := strings.Cut(s, "<"+name+">")
@@ -616,18 +634,27 @@ func lastReply(path string) (text, uuid string, prompts []string, err error) {
 		// agent works is queued into the running turn as an attachment.
 		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
 			var s string
+			var blocks []block
 			if json.Unmarshal(e.Message.Content, &s) == nil {
 				if name := tag(s, "command-name"); strings.HasPrefix(s, "<command-") && name != "" {
 					s = name + " " + tag(s, "command-args") // a slash command is recorded as tags
 				}
 				turn = []string{pasteMarker.ReplaceAllString(s, "")}
+			} else if json.Unmarshal(e.Message.Content, &blocks) == nil && !slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "tool_result" }) {
+				var t []string // a prompt with a pasted image is recorded as blocks
+				for _, b := range blocks {
+					if b.Type == "text" {
+						t = append(t, b.Text)
+					}
+				}
+				turn = []string{strings.Join(t, "\n")}
 			}
 		}
 		if bytes.Contains(line, []byte(`"queued_command"`)) && json.Unmarshal(line, &e) == nil && e.Attachment.CommandMode == "prompt" && !e.IsSidechain {
 			turn = append(turn, e.Attachment.Prompt)
 		}
 		if bytes.Contains(line, []byte(`"assistant"`)) && json.Unmarshal(line, &e) == nil && e.Type == "assistant" && !e.IsSidechain {
-			var content []struct{ Type, Text string }
+			var content []block
 			json.Unmarshal(e.Message.Content, &content)
 			var t []string
 			for _, c := range content {
