@@ -151,6 +151,9 @@ func (a *app) listenOnce() error {
 	if err := a.catchUp(); err != nil {
 		return err
 	}
+	// ponytail: one post per connect, so a flapping network posts on every reconnect; rate limit if that bites.
+	a.say("", connectedMessage(a.connected))
+	a.connected = true
 
 	// Mattermost pings about every 60s; 2 minutes of silence means the connection is dead.
 	const readWait = 2 * time.Minute
@@ -184,6 +187,15 @@ func (a *app) catchUp() error {
 		}
 	}
 	return nil
+}
+
+// connectedMessage announces a WebSocket connection: the daemon's first, or a reconnect after the
+// connection dropped.
+func connectedMessage(reconnect bool) string {
+	if reconnect {
+		return "🔌 Reconnected after the connection dropped."
+	}
+	return "🔌 Connected: the herdr-mm daemon started."
 }
 
 func (a *app) handleEvent(raw []byte) error {

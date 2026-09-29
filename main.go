@@ -73,6 +73,7 @@ type app struct {
 	envPath, stateDir, herdrBin, claudeDir string
 	botID, userID, dmID                    string // filled by connect
 	lastPost                               int64  // create_at of the last DM post the daemon handled
+	connected                              bool   // the daemon's WebSocket has connected before
 }
 
 func load() (*app, error) {
@@ -214,8 +215,8 @@ func (a *app) daemonPid() int {
 
 // row is a pane herdr reports an agent in, listed in the status popup.
 type row struct {
-	ID, Agent, Cwd, Status string
-	Mirrored               bool
+	ID, Name, Agent, Cwd, Status string
+	Mirrored                     bool
 }
 
 // listedAgent is an entry of herdr agent list.
@@ -241,7 +242,81 @@ func (a *app) rows() ([]row, error) {
 	if err != nil {
 		return nil, err
 	}
-	return listRows(r.Result.Agents, panes), nil
+	rows := listRows(r.Result.Agents, panes)
+	names, err := a.names()
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].Name = names[rows[i].ID]
+	}
+	return rows, nil
+}
+
+// herdrPane, herdrTab and herdrWorkspace are the parts of herdr's pane, tab and workspace lists that name a pane.
+type herdrPane struct {
+	PaneID      string `json:"pane_id"`
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string
+}
+
+type herdrTab struct {
+	TabID string `json:"tab_id"`
+	Label string
+}
+
+type herdrWorkspace struct {
+	WorkspaceID string `json:"workspace_id"`
+	Label       string
+	TabCount    int `json:"tab_count"`
+}
+
+// names maps each pane id to the name herdr shows for it.
+func (a *app) names() (map[string]string, error) {
+	var r struct {
+		Result struct {
+			Panes      []herdrPane
+			Tabs       []herdrTab
+			Workspaces []herdrWorkspace
+		}
+	}
+	for _, kind := range []string{"pane", "tab", "workspace"} {
+		out, err := a.herdr(kind, "list")
+		if err == nil {
+			err = json.Unmarshal(out, &r)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces), nil
+}
+
+// paneNames names a pane by its own label when renamed, otherwise by its workspace's label, followed
+// by the tab's label when the workspace has more than one tab.
+func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) map[string]string {
+	tabLabel := map[string]string{}
+	for _, t := range tabs {
+		tabLabel[t.TabID] = t.Label
+	}
+	ws := map[string]herdrWorkspace{}
+	for _, w := range workspaces {
+		ws[w.WorkspaceID] = w
+	}
+	names := map[string]string{}
+	for _, p := range panes {
+		w := ws[p.WorkspaceID]
+		switch {
+		case p.Label != "":
+			names[p.PaneID] = p.Label
+		case w.TabCount > 1:
+			names[p.PaneID] = w.Label + " / " + tabLabel[p.TabID]
+		default:
+			names[p.PaneID] = w.Label
+		}
+	}
+	return names
 }
 
 // listRows marks which of herdr's agents are mirrored.
@@ -267,7 +342,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, " \tPANE\tAGENT\tDIRECTORY\tSTATUS\tMIRRORED")
+	fmt.Fprintln(tw, " \tNAME\tPANE\tAGENT\tDIRECTORY\tSTATUS\tMIRRORED")
 	for i, r := range rows {
 		cursor, on := " ", ""
 		if i == sel {
@@ -276,7 +351,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		if r.Mirrored {
 			on = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
 	}
 	return tw.Flush()
 }
@@ -385,6 +460,7 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
+	Name       string `json:"name,omitempty"`        // herdr's name for the pane, kept by sync for the stop notice
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
@@ -455,7 +531,7 @@ func (a *app) toggle(id string) error {
 		if p := panes[id]; p != nil {
 			delete(panes, id)
 			p.Status = "off"
-			return a.patchPost(p.RootID, rootMessage(id, p))
+			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -508,7 +584,7 @@ func (a *app) event(name string, raw []byte) error {
 		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
-			return a.patchPost(p.RootID, rootMessage(id, p))
+			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
@@ -533,6 +609,9 @@ func (a *app) sync(id string, p *pane) error {
 	p.Status = info.Status
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
+	}
+	if names, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
+		p.Name = names[id]
 	}
 	var patchErr error
 	if p.Status != prev {
@@ -623,6 +702,22 @@ func rootMessage(id string, p *pane) string {
 		return head + "\n_Pane closed, mirroring stopped._"
 	}
 	return head + "\n_Reply in this thread to prompt the agent._"
+}
+
+// postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
+// the root post is only edited, which notifies nobody.
+func (a *app) postStopped(id string, p *pane) error {
+	what, name := "Mirroring stopped", ""
+	if p.Status == "closed" {
+		what = "Pane closed, mirroring stopped"
+	}
+	if p.Name != "" {
+		name = "**" + p.Name + "** · "
+	}
+	msg := fmt.Sprintf("%s %s for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
+		emoji[p.Status], what, name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
+	_, err := a.createPost(p.ChannelID, "", msg)
+	return err
 }
 
 func baseName(path string) string {
