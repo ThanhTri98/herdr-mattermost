@@ -74,7 +74,11 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "GET" && path == "/users/me":
-		fmt.Fprint(w, `{"id":"bot"}`)
+		fmt.Fprint(w, `{"id":"bot","username":"herdr"}`)
+	case r.Method == "GET" && path == "/users/me/teams":
+		fmt.Fprint(w, `[{"id":"t1","display_name":"Team"}]`)
+	case r.Method == "GET" && path == "/users/me/teams/t1/channels":
+		fmt.Fprint(w, `[{"id":"dm","type":"D","display_name":"alice"},{"id":"ch2","type":"P","display_name":"Ops"},{"id":"ch1","type":"O","display_name":"Dev"}]`)
 	case r.Method == "GET" && path == "/users/username/alice":
 		fmt.Fprint(w, `{"id":"alice-id"}`)
 	case r.Method == "POST" && path == "/channels/direct":
@@ -95,11 +99,11 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(file)
 		f.files = append(f.files, r.FormValue("channel_id")+"|"+h.Filename+"|"+string(b))
 		fmt.Fprintf(w, `{"file_infos":[{"id":"file%d"}]}`, len(f.files))
-	case r.Method == "GET" && path == "/channels/dm/posts":
+	case r.Method == "GET" && strings.HasPrefix(path, "/channels/") && strings.HasSuffix(path, "/posts"):
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		list := map[string]map[string]*post{"posts": {}}
 		for _, p := range f.posts {
-			if p.ChannelID == "dm" && p.CreateAt > since {
+			if "/channels/"+p.ChannelID+"/posts" == path && p.CreateAt > since {
 				list["posts"][p.ID] = p
 			}
 		}
@@ -630,7 +634,7 @@ func posted(p post) []byte {
 
 func mirroredEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
-	e.a.botID, e.a.userID, e.a.dmID = "bot", "alice-id", "dm"
+	e.a.botID, e.a.botName, e.a.userID, e.a.dmID = "bot", "herdr", "alice-id", "dm"
 	e.a.withState(func(panes map[string]*pane) error {
 		panes["w1:p1"] = &pane{RootID: "root1", ChannelID: "dm", Status: "idle", Agent: "claude", Cwd: "/work/proj"}
 		return nil
@@ -823,7 +827,7 @@ func TestStopEndsDaemon(t *testing.T) {
 func TestConfigErrors(t *testing.T) {
 	e := newTestEnv(t)
 	e.a.token, e.a.user = "", ""
-	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN, MM_USER in") {
+	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN, MM_USER: set it with s in the Mattermost status popup, or in ") {
 		t.Fatalf("requireMM = %v", err)
 	}
 	e.a.token, e.a.user = "wrong", "alice"
@@ -1101,7 +1105,7 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("vi truncate = %q", got)
 	}
 	e.a.token = ""
-	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN trong "+e.a.envPath {
+	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN: nhập bằng phím s trong popup trạng thái Mattermost, hoặc trong "+e.a.envPath {
 		t.Fatalf("vi toggle failure = %q", got)
 	}
 	e.a.token = "wrong"

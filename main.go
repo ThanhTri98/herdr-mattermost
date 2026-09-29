@@ -1,4 +1,4 @@
-// herdr-mm mirrors opted-in herdr agent panes into a Mattermost DM between a bot and one user.
+// herdr-mm mirrors opted-in herdr agent panes into a Mattermost DM between a bot and one user, or a channel.
 //
 //	herdr-mm start   startup hook: launch the daemon detached (a second daemon exits at once)
 //	herdr-mm daemon  hold the Mattermost WebSocket and type thread replies into agents
@@ -72,11 +72,11 @@ func main() {
 }
 
 type app struct {
-	mmURL, token, user                     string // from $HERDR_PLUGIN_CONFIG_DIR/.env
-	envPath, stateDir, herdrBin, claudeDir string
-	botID, userID, dmID                    string // filled by connect
-	lastPost                               int64  // create_at of the last DM post the daemon handled
-	connected                              bool   // the daemon's WebSocket has connected before
+	mmURL, token, user                                   string // from settings.json, then .env, in $HERDR_PLUGIN_CONFIG_DIR
+	envPath, settingsPath, stateDir, herdrBin, claudeDir string
+	botID, botName, userID, dmID                         string // filled by connect
+	lastPost                                             int64  // create_at of the last post the daemon handled
+	connected                                            bool   // the daemon's WebSocket has connected before
 }
 
 func load() (*app, error) {
@@ -84,7 +84,7 @@ func load() (*app, error) {
 	if configDir == "" || stateDir == "" {
 		return nil, errors.New("HERDR_PLUGIN_CONFIG_DIR and HERDR_PLUGIN_STATE_DIR are not set; herdr-mm runs as a herdr plugin")
 	}
-	a := &app{envPath: filepath.Join(configDir, ".env"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
+	a := &app{envPath: filepath.Join(configDir, ".env"), settingsPath: filepath.Join(configDir, "settings.json"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
 	if a.herdrBin == "" {
 		a.herdrBin = "herdr"
 	}
@@ -99,8 +99,97 @@ func load() (*app, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
-	a.mmURL, a.token, a.user = strings.TrimRight(env["MM_URL"], "/"), env["MM_BOT_TOKEN"], strings.TrimPrefix(env["MM_USER"], "@")
+	s, err := readSettings(a.settingsPath)
+	if err != nil {
+		return nil, err
+	}
+	// Saved settings win; .env fills the fields not saved.
+	a.mmURL = strings.TrimRight(cmp.Or(s.URL, env["MM_URL"]), "/")
+	a.token = cmp.Or(s.Token, env["MM_BOT_TOKEN"])
+	a.user = strings.TrimPrefix(cmp.Or(s.User, env["MM_USER"]), "@")
 	return a, nil
+}
+
+// settings are the values entered in the popup's settings screen, saved in settings.json.
+type settings struct {
+	URL   string `json:"url,omitempty"`
+	Token string `json:"token,omitempty"`
+	User  string `json:"user,omitempty"`
+}
+
+func readSettings(path string) (settings, error) {
+	var s settings
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return s, nil
+	}
+	if err == nil {
+		err = json.Unmarshal(b, &s)
+	}
+	if err != nil {
+		return s, fmt.Errorf("%s: %w", path, err)
+	}
+	return s, nil
+}
+
+// writeFile replaces path by rename, so it is never read half written, with mode 0600.
+func writeFile(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err == nil {
+		err = os.WriteFile(path+".tmp", b, 0o600)
+	}
+	if err == nil {
+		err = os.Rename(path+".tmp", path)
+	}
+	return err
+}
+
+// editSettings asks for each setting on w and reads the answers from r, then saves them. An empty
+// answer keeps the saved value, so a field left unsaved still comes from .env. hide turns echo off
+// while the token is typed.
+func (a *app) editSettings(r *bufio.Reader, w io.Writer, hide func(bool)) error {
+	s, err := readSettings(a.settingsPath)
+	if err != nil {
+		return err
+	}
+	ask := func(prompt string) (string, error) {
+		fmt.Fprint(w, prompt)
+		line, err := r.ReadString('\n')
+		return strings.TrimSpace(line), err
+	}
+	fmt.Fprint(w, a.t("settings.title")+"\n\n")
+	v, err := ask(fmt.Sprintf(a.t("settings.url"), a.mmURL))
+	if err != nil {
+		return err
+	}
+	if v != "" {
+		s.URL = strings.TrimRight(v, "/")
+	}
+	set := a.t("settings.unset")
+	if a.token != "" {
+		set = a.t("settings.set")
+	}
+	hide(true)
+	v, err = ask(fmt.Sprintf(a.t("settings.token"), set))
+	hide(false)
+	fmt.Fprintln(w)
+	if err != nil {
+		return err
+	}
+	if v != "" {
+		s.Token = v
+	}
+	if v, err = ask(fmt.Sprintf(a.t("settings.user"), a.user)); err != nil {
+		return err
+	}
+	if v != "" {
+		s.User = strings.TrimPrefix(v, "@")
+	}
+	if err := writeFile(a.settingsPath, s); err != nil {
+		return err
+	}
+	a.mmURL, a.token, a.user = strings.TrimRight(cmp.Or(s.URL, a.mmURL), "/"), cmp.Or(s.Token, a.token), cmp.Or(s.User, a.user)
+	return nil
 }
 
 // readEnv parses KEY=VALUE lines, ignoring blanks, comments and an "export " prefix.
@@ -220,6 +309,7 @@ func (a *app) daemonPid() int {
 type row struct {
 	ID, Name, Agent, Cwd, Status string
 	Mirrored                     bool
+	Target                       target
 }
 
 // listedAgent is an entry of herdr agent list.
@@ -235,6 +325,10 @@ func (a *app) rows() ([]row, error) {
 	if err != nil {
 		return nil, err
 	}
+	targets, err := a.readTargets()
+	if err != nil {
+		return nil, err
+	}
 	labels, hidden, agents, err := a.labels(panes)
 	if err != nil {
 		return nil, err
@@ -242,7 +336,7 @@ func (a *app) rows() ([]row, error) {
 	var rows []row
 	for _, r := range listRows(agents, panes) {
 		if !hidden[r.ID] {
-			r.Name = labels[r.ID]
+			r.Name, r.Target = labels[r.ID], targets[r.ID]
 			rows = append(rows, r)
 		}
 	}
@@ -394,17 +488,43 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		if r.Mirrored {
 			on = a.t("popup.yes")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, a.targetName(r.Target))
 	}
 	return tw.Flush()
 }
 
+// targetName names a pane's target in the popup.
+func (a *app) targetName(t target) string {
+	if t.ID == "" {
+		return a.t("target.dm")
+	}
+	return "~" + t.Name
+}
+
+// readKeys reads the next keys typed; keys typed quickly arrive in one read. A lone Esc is "\x1b".
+func readKeys() ([]string, error) {
+	b := make([]byte, 16)
+	n, err := os.Stdin.Read(b)
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for k := string(b[:n]); k != ""; {
+		key := k[:1]
+		if strings.HasPrefix(k, "\x1b[") && len(k) >= 3 {
+			key = k[:3]
+		}
+		k = k[len(key):]
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
 // popup redraws the status after every key: arrows or j/k move, Enter or Space toggles the selected
-// pane, q or Esc closes.
+// pane, t picks its target, s opens the settings, q or Esc closes.
 func (a *app) popup() {
 	defer rawMode()()
 	sel, msg := 0, ""
-	b := make([]byte, 16)
 	for {
 		rows, err := a.rows()
 		sel = max(min(sel, len(rows)-1), 0)
@@ -419,20 +539,24 @@ func (a *app) popup() {
 			fmt.Printf("\n%s\n", msg)
 		}
 		fmt.Print("\n" + a.t("popup.hint"))
-		n, err := os.Stdin.Read(b)
-		k := string(b[:n])
-		if err != nil || k == "\x1b" {
+		keys, err := readKeys()
+		if err != nil {
 			return
 		}
-		for k != "" { // keys typed quickly arrive in one read
-			key := k[:1]
-			if strings.HasPrefix(k, "\x1b[") && len(k) >= 3 {
-				key = k[:3]
-			}
-			k = k[len(key):]
+		msg = ""
+	keys:
+		for _, key := range keys {
 			switch key {
-			case "q":
+			case "q", "\x1b":
 				return
+			case "t":
+				if sel < len(rows) {
+					msg = a.pickTarget(rows[sel])
+				}
+				break keys // the picker read the keys that followed
+			case "s":
+				msg = a.settingsScreen()
+				break keys
 			case "l":
 				if err := a.switchLang(); err != nil {
 					msg = err.Error()
@@ -463,13 +587,97 @@ func (a *app) popupToggle(r row) string {
 	return ""
 }
 
+// pickTarget lists the DM and the bot's channels not linked to another pane, and links the pane to the
+// one picked with Enter; q or Esc cancels. It returns the error to show, if any.
+func (a *app) pickTarget(r row) string {
+	fmt.Printf("\n\n"+a.t("picker.loading"), r.Name)
+	opts, err := a.targetOptions(r.ID)
+	if err != nil {
+		return err.Error()
+	}
+	sel := max(slices.IndexFunc(opts, func(t target) bool { return t.ID == r.Target.ID }), 0)
+	for {
+		fmt.Print("\x1b[H\x1b[2J")
+		fmt.Printf(a.t("picker.title")+"\n\n", r.Name)
+		for i, t := range opts {
+			cursor := " "
+			if i == sel {
+				cursor = ">"
+			}
+			fmt.Printf("%s %s\n", cursor, a.targetName(t))
+		}
+		fmt.Print("\n" + a.t("picker.hint"))
+		keys, err := readKeys()
+		if err != nil {
+			return ""
+		}
+		for _, key := range keys {
+			switch key {
+			case "q", "\x1b":
+				return ""
+			case "\x1b[A", "k":
+				sel = max(sel-1, 0)
+			case "\x1b[B", "j":
+				sel = min(sel+1, len(opts)-1)
+			case "\r", "\n", " ":
+				fmt.Printf("\n\n"+a.t("picker.linking"), r.Name, a.targetName(opts[sel]))
+				if err := a.retarget(r.ID, opts[sel]); err != nil {
+					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
+				}
+				return ""
+			}
+		}
+	}
+}
+
+// targetOptions is the DM followed by the channels the bot is in that no other pane is linked to.
+func (a *app) targetOptions(id string) ([]target, error) {
+	if err := a.requireMM(); err != nil {
+		return nil, err
+	}
+	chans, err := a.channels()
+	if err != nil {
+		return nil, err
+	}
+	targets, err := a.readTargets()
+	if err != nil {
+		return nil, err
+	}
+	return append([]target{{}}, freeChannels(chans, targets, id)...), nil
+}
+
+// settingsScreen asks for the settings, saves them and restarts the daemon so it uses them.
+func (a *app) settingsScreen() string {
+	fmt.Print("\x1b[H\x1b[2J")
+	stty("icanon", "echo")
+	defer stty("-icanon", "-echo", "min", "1")
+	err := a.editSettings(bufio.NewReader(os.Stdin), os.Stdout, func(hide bool) {
+		if hide {
+			stty("-echo")
+		} else {
+			stty("echo")
+		}
+	})
+	if err == nil {
+		err = a.stop() // the next daemon reads the settings afresh
+	}
+	if err == nil {
+		err = a.start()
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return a.t("settings.saved")
+}
+
+func stty(args ...string) {
+	cmd := exec.Command("stty", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Run()
+}
+
 // rawMode puts the terminal in raw-enough mode without a dependency and returns the undo.
 func rawMode() func() {
-	stty := func(args ...string) {
-		cmd := exec.Command("stty", args...)
-		cmd.Stdin = os.Stdin
-		cmd.Run()
-	}
 	stty("-icanon", "-echo", "min", "1")
 	return func() { stty("icanon", "echo") }
 }
@@ -511,6 +719,8 @@ type pane struct {
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
+	Channel    string `json:"channel,omitempty"`     // name of the channel the thread is in, "" for the DM
+	ReplyRoot  string `json:"reply_root,omitempty"`  // in a channel, the thread of the last question typed in
 }
 
 // recent is the last few thread replies typed into a pane, oldest first. panes.json written before
@@ -542,15 +752,78 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 		return err
 	}
 	fnErr := fn(panes) // saved even on error: fn only records what already happened
-	path := filepath.Join(a.stateDir, "panes.json")
-	b, err := json.MarshalIndent(panes, "", "  ")
-	if err == nil {
-		err = os.WriteFile(path+".tmp", b, 0o600)
+	return errors.Join(fnErr, writeFile(filepath.Join(a.stateDir, "panes.json"), panes))
+}
+
+// target is a channel a pane is linked to, by id, with its name for the popup. A pane with none is
+// linked to the DM.
+type target struct{ ID, Name string }
+
+// readTargets loads targets.json, which maps pane ids to their channel. A channel holds one pane:
+// when several are linked to it, the first in pane order keeps it and the others fall back to the DM.
+// Writes go through writeTargets under state.lock.
+func (a *app) readTargets() (map[string]target, error) {
+	path := filepath.Join(a.stateDir, "targets.json")
+	all := map[string]target{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &all); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
 	}
-	if err == nil {
-		err = os.Rename(path+".tmp", path)
+	out, taken := map[string]target{}, map[string]bool{}
+	for _, id := range slices.SortedFunc(maps.Keys(all), paneOrder) {
+		if t := all[id]; t.ID != "" && !taken[t.ID] {
+			out[id], taken[t.ID] = t, true
+		}
 	}
-	return errors.Join(fnErr, err)
+	return out, nil
+}
+
+func (a *app) writeTargets(t map[string]target) error {
+	return writeFile(filepath.Join(a.stateDir, "targets.json"), t)
+}
+
+// freeChannels leaves out of chans the channels linked to a pane other than id.
+func freeChannels(chans []target, targets map[string]target, id string) []target {
+	return slices.DeleteFunc(slices.Clone(chans), func(c target) bool {
+		for other, t := range targets {
+			if other != id && t.ID == c.ID {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// retarget links a pane to a channel, or to the DM for a target with no id. A mirrored pane's thread
+// is stopped where it was and a new one started in the new place.
+func (a *app) retarget(id string, to target) error {
+	var changed, mirrored bool
+	err := a.withState(func(panes map[string]*pane) error {
+		targets, err := a.readTargets()
+		if err != nil {
+			return err
+		}
+		if to.ID != "" && len(freeChannels([]target{to}, targets, id)) == 0 {
+			return fmt.Errorf(a.t("target.taken"), to.Name)
+		}
+		changed, mirrored = targets[id].ID != to.ID, panes[id] != nil
+		if to.ID == "" {
+			delete(targets, id)
+		} else {
+			targets[id] = to
+		}
+		return a.writeTargets(targets)
+	})
+	if err != nil || !changed || !mirrored {
+		return err
+	}
+	if err := a.toggle(id); err != nil {
+		return err
+	}
+	return a.toggle(id)
 }
 
 // readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
@@ -588,10 +861,15 @@ func (a *app) toggle(id string) error {
 		if err != nil {
 			return err
 		}
-		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
+		targets, err := a.readTargets()
+		if err != nil {
+			return err
+		}
+		t := targets[id]
+		p := &pane{ChannelID: cmp.Or(t.ID, a.dmID), Channel: t.Name, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
 		a.label(id, p, panes)
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
-		if p.RootID, err = a.createPost(a.dmID, "", a.rootMessage(p)); err != nil {
+		if p.RootID, err = a.createPost(p.ChannelID, "", a.rootMessage(p)); err != nil {
 			return err
 		}
 		panes[id] = p
@@ -622,6 +900,16 @@ func (a *app) event(name string, raw []byte) error {
 		id, oldID = ev.Data.Pane.PaneID, ev.Data.PreviousPaneID
 	}
 	return a.withState(func(panes map[string]*pane) error {
+		if targets, err := a.readTargets(); err == nil && targets[oldID].ID != "" && (name == "pane_moved" || name == "pane_closed") {
+			t := targets[oldID]
+			delete(targets, oldID)
+			if name == "pane_moved" {
+				targets[id] = t
+			}
+			if err := a.writeTargets(targets); err != nil {
+				return err
+			}
+		}
 		p := panes[oldID]
 		if p == nil {
 			return nil // not mirrored: the hook fires for every pane
@@ -711,7 +999,11 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
 			if p.fromThread(r.prompts) {
-				if _, err := a.createPost(p.ChannelID, p.RootID, r.text); err != nil {
+				text := r.text
+				if p.Channel != "" {
+					text = "@" + a.user + " " + text // answers the asker, who can only be MM_USER
+				}
+				if _, err := a.createPost(p.ChannelID, cmp.Or(p.ReplyRoot, p.RootID), text); err != nil {
 					return err
 				}
 			}
@@ -728,7 +1020,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		}
 		if d := dialog(string(screen)); d != p.LastDialog {
 			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, a.truncate(d, maxPost-500))
-			if _, err := a.createPost(p.ChannelID, p.RootID, msg); err != nil {
+			if _, err := a.createPost(p.ChannelID, cmp.Or(p.ReplyRoot, p.RootID), msg); err != nil {
 				return err
 			}
 			p.LastDialog = d
@@ -748,6 +1040,9 @@ func (a *app) rootMessage(p *pane) string {
 		return head + "\n" + a.t("root.off")
 	case "closed":
 		return head + "\n" + a.t("root.closed")
+	}
+	if p.Channel != "" {
+		return head + "\n" + a.t("root.channel")
 	}
 	return head + "\n" + a.t("root.reply")
 }

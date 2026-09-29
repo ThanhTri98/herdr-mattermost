@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -120,7 +121,7 @@ func (a *app) send(req *http.Request, out any) error {
 // connect checks the bot token, looks up MM_USER and opens the bot's DM with them. lastPost starts at
 // the DM's newest post.
 func (a *app) connect() error {
-	var me, user struct{ ID string }
+	var me, user struct{ ID, Username string }
 	var dm struct {
 		ID         string
 		LastPostAt int64 `json:"last_post_at"`
@@ -134,8 +135,40 @@ func (a *app) connect() error {
 	if err := a.api(http.MethodPost, "/channels/direct", []string{me.ID, user.ID}, &dm); err != nil {
 		return fmt.Errorf(a.t("err.dm")+": %w", a.user, err)
 	}
-	a.botID, a.userID, a.dmID, a.lastPost = me.ID, user.ID, dm.ID, dm.LastPostAt
+	a.botID, a.botName, a.userID, a.dmID, a.lastPost = me.ID, me.Username, user.ID, dm.ID, dm.LastPostAt
 	return nil
+}
+
+// channels lists the public and private channels the bot is in, across its teams, by name.
+func (a *app) channels() ([]target, error) {
+	var teams []struct {
+		ID          string
+		DisplayName string `json:"display_name"`
+	}
+	if err := a.api(http.MethodGet, "/users/me/teams", nil, &teams); err != nil {
+		return nil, err
+	}
+	var out []target
+	for _, t := range teams {
+		var chans []struct {
+			ID, Type    string
+			DisplayName string `json:"display_name"`
+		}
+		if err := a.api(http.MethodGet, "/users/me/teams/"+url.PathEscape(t.ID)+"/channels", nil, &chans); err != nil {
+			return nil, err
+		}
+		for _, c := range chans {
+			if c.Type == "O" || c.Type == "P" { // not DMs or group messages
+				name := c.DisplayName
+				if len(teams) > 1 {
+					name = t.DisplayName + " / " + name
+				}
+				out = append(out, target{c.ID, name})
+			}
+		}
+	}
+	slices.SortFunc(out, func(x, y target) int { return strings.Compare(x.Name, y.Name) })
+	return out, nil
 }
 
 // connectRetry calls connect until Mattermost answers: herdr starts the daemon once, maybe before the
@@ -211,13 +244,27 @@ func (a *app) listenOnce() error {
 	}
 }
 
-// catchUp handles the DM posts sent while the WebSocket was down, oldest first.
+// catchUp handles the posts sent in the DM and the linked channels while the WebSocket was down, oldest first.
 func (a *app) catchUp() error {
-	var list struct{ Posts map[string]post }
-	if err := a.api(http.MethodGet, fmt.Sprintf("/channels/%s/posts?since=%d", a.dmID, a.lastPost), nil, &list); err != nil {
+	panes, err := a.readPanes()
+	if err != nil {
 		return err
 	}
-	posts := slices.SortedFunc(maps.Values(list.Posts), func(x, y post) int { return cmp.Compare(x.CreateAt, y.CreateAt) })
+	ids := []string{a.dmID}
+	for _, p := range panes {
+		if p.ChannelID != "" && !slices.Contains(ids, p.ChannelID) {
+			ids = append(ids, p.ChannelID)
+		}
+	}
+	var posts []post
+	for _, id := range ids {
+		var list struct{ Posts map[string]post }
+		if err := a.api(http.MethodGet, fmt.Sprintf("/channels/%s/posts?since=%d", id, a.lastPost), nil, &list); err != nil {
+			return err
+		}
+		posts = slices.AppendSeq(posts, maps.Values(list.Posts))
+	}
+	slices.SortFunc(posts, func(x, y post) int { return cmp.Compare(x.CreateAt, y.CreateAt) })
 	for _, p := range posts {
 		if err := a.handlePost(p, true); err != nil {
 			return err
@@ -252,46 +299,71 @@ func (a *app) handleEvent(raw []byte) error {
 
 var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 
-// handlePost obeys a post from MM_USER in the bot's DM: a thread reply prompts that thread's pane, a
-// top-level "list" lists the mirrored panes. late marks a post sent while the WebSocket was down.
+// handlePost obeys a post from MM_USER. In the bot's DM a thread reply prompts that thread's pane and a
+// top-level "list" lists the mirrored panes. In a channel linked to a pane, a post that @mentions the bot,
+// top-level or in any thread, prompts that pane and is answered in its thread; anyone else who mentions
+// the bot there is told only MM_USER is obeyed. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, late bool) error {
-	// Only MM_USER is obeyed, which also rules out the bot itself; bot and webhook posts can carry
-	// a human's user id, so they are dropped too: no reply loops, no remote control by integrations.
-	if p.UserID != a.userID || p.ChannelID != a.dmID || fmt.Sprint(p.Props["from_bot"]) == "true" || fmt.Sprint(p.Props["from_webhook"]) == "true" {
+	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
+	// control by integrations.
+	if p.UserID == a.botID || fmt.Sprint(p.Props["from_bot"]) == "true" || fmt.Sprint(p.Props["from_webhook"]) == "true" {
 		return nil
 	}
 	if p.CreateAt <= a.lastPost || p.DeleteAt != 0 {
 		return nil // already handled, or deleted before it was caught up
 	}
+	inDM, root, text := p.ChannelID == a.dmID, p.RootID, p.Message
+	if inDM && p.UserID != a.userID {
+		return nil
+	}
+	if !inDM {
+		var mentioned bool
+		if text, mentioned = a.stripMention(p.Message); !mentioned || !a.linked(p.ChannelID) {
+			return nil
+		}
+		root = cmp.Or(p.RootID, p.ID)
+	}
 	a.lastPost = p.CreateAt
 	if err := os.WriteFile(filepath.Join(a.stateDir, "last_post"), []byte(strconv.FormatInt(p.CreateAt, 10)), 0o600); err != nil {
 		log.Printf("last_post: %v", err)
 	}
+	if p.UserID != a.userID {
+		a.sayIn(p.ChannelID, root, fmt.Sprintf(a.t("channel.refused"), a.user))
+		return nil
+	}
 	if !a.pluginOn() {
-		a.say(p.RootID, a.t("plugin.off"))
+		a.sayIn(p.ChannelID, root, a.t("plugin.off"))
 		return errPluginOff
 	}
-	if p.RootID == "" {
-		a.say("", a.topLevel(p.Message))
+	if inDM && root == "" {
+		a.say("", a.topLevel(text))
 		return nil
 	}
 
-	if cmd, ok := captureCmd(p.Message); ok { // the rest is typed like any reply, then the screen is posted once it settles
-		defer func() { go a.capture(p.RootID, cmd) }()
+	if cmd, ok := captureCmd(text); ok && inDM { // the rest is typed like any reply, then the screen is posted once it settles
+		defer func() { go a.capture(root, cmd) }()
 		if cmd == "" {
 			return nil
 		}
-		p.Message = cmd
+		text = cmd
+	}
+	if text == "" {
+		return nil // only the mention
 	}
 	var paneID string
 	var prev recent
 	a.withState(func(panes map[string]*pane) error {
-		for id, pp := range panes {
-			if pp.RootID == p.RootID {
+		for _, id := range slices.SortedFunc(maps.Keys(panes), paneOrder) {
+			if pp := panes[id]; paneID == "" && (inDM && pp.RootID == root || !inDM && pp.ChannelID == p.ChannelID) {
 				paneID, prev = id, pp.Prompted
 				// Recorded before typing so the turn's end cannot beat it; marks the turn for posting.
-				pp.Prompted = append(pp.Prompted, p.Message)
+				pp.Prompted = append(pp.Prompted, text)
 				pp.Prompted = pp.Prompted[max(0, len(pp.Prompted)-5):]
+				if !inDM {
+					// ponytail: the reply goes to the thread of the latest question, so a turn still
+					// answering an earlier question in another thread is posted there; record one per prompt if that bites.
+					pp.ReplyRoot = root
+				}
 			}
 		}
 		return nil
@@ -299,10 +371,10 @@ func (a *app) handlePost(p post, late bool) error {
 	if paneID == "" {
 		return nil // not a mirrored pane's thread, or mirroring was switched off
 	}
-	log.Printf("prompt %s: %q", paneID, p.Message)
-	if _, err := a.herdr("agent", "prompt", paneID, p.Message); err != nil {
+	log.Printf("prompt %s: %q", paneID, text)
+	if _, err := a.herdr("agent", "prompt", paneID, text); err != nil {
 		a.withState(func(panes map[string]*pane) error {
-			if pp := panes[paneID]; pp != nil && len(pp.Prompted) > 0 && pp.Prompted[len(pp.Prompted)-1] == p.Message {
+			if pp := panes[paneID]; pp != nil && len(pp.Prompted) > 0 && pp.Prompted[len(pp.Prompted)-1] == text {
 				pp.Prompted = prev
 			}
 			return nil
@@ -311,13 +383,38 @@ func (a *app) handlePost(p post, late bool) error {
 		if he := (*herdrError)(nil); errors.As(err, &he) && he.Code == "agent_blocked" {
 			msg = a.t("prompt.blocked")
 		}
-		a.say(p.RootID, msg)
+		a.sayIn(p.ChannelID, root, msg)
 	} else if late {
-		a.say(p.RootID, a.t("prompt.late"))
+		a.sayIn(p.ChannelID, root, a.t("prompt.late"))
 	} else {
-		a.say(p.RootID, a.t("prompt.received"))
+		a.sayIn(p.ChannelID, root, a.t("prompt.received"))
 	}
 	return nil
+}
+
+// linked reports whether a mirrored pane's thread is in the channel.
+func (a *app) linked(channelID string) bool {
+	panes, _ := a.readPanes()
+	for _, p := range panes {
+		if p.ChannelID == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+// stripMention removes the @mentions of the bot from a message and reports whether it had one.
+func (a *app) stripMention(msg string) (string, bool) {
+	if a.botName == "" {
+		return msg, false
+	}
+	// Mattermost usernames hold letters, digits, ".", "-" and "_"; a trailing "." ends the sentence.
+	re := regexp.MustCompile(`(?i)(^|[^\w.@-])@` + regexp.QuoteMeta(a.botName) + `\.?([^\w-]|$)`)
+	out := msg
+	for next := re.ReplaceAllString(out, "$1$2"); next != out; next = re.ReplaceAllString(out, "$1$2") {
+		out = next
+	}
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(out), ",:")), out != msg
 }
 
 // topLevel answers a DM message outside any thread.
@@ -341,8 +438,11 @@ func (a *app) topLevel(msg string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (a *app) say(rootID, msg string) {
-	if _, err := a.createPost(a.dmID, rootID, msg); err != nil {
+// say posts into the DM.
+func (a *app) say(rootID, msg string) { a.sayIn(a.dmID, rootID, msg) }
+
+func (a *app) sayIn(channelID, rootID, msg string) {
+	if _, err := a.createPost(channelID, rootID, msg); err != nil {
 		log.Printf("post: %v", err)
 	}
 }
