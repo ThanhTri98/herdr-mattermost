@@ -108,6 +108,14 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		json.NewEncoder(w).Encode(list)
+	case r.Method == "GET" && strings.HasPrefix(path, "/posts/"):
+		for _, p := range f.posts {
+			if "/posts/"+p.ID == path {
+				json.NewEncoder(w).Encode(p)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	case r.Method == "PUT" && strings.HasSuffix(path, "/patch") && f.failPatch:
 		http.Error(w, `{"message":"edit time limit"}`, http.StatusInternalServerError)
 	case r.Method == "PUT" && strings.HasSuffix(path, "/patch"):

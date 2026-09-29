@@ -250,19 +250,23 @@ func (a *app) catchUp() error {
 	if err != nil {
 		return err
 	}
-	ids := []string{a.dmID}
+	roots := map[string]string{a.dmID: ""} // channel id -> root post of the pane linked to it, "" for the DM
 	for _, p := range panes {
-		if p.ChannelID != "" && !slices.Contains(ids, p.ChannelID) {
-			ids = append(ids, p.ChannelID)
+		if p.ChannelID != a.dmID {
+			roots[p.ChannelID] = p.RootID
 		}
 	}
 	var posts []post
-	for _, id := range ids {
-		var list struct{ Posts map[string]post }
-		if err := a.api(http.MethodGet, fmt.Sprintf("/channels/%s/posts?since=%d", id, a.lastPost), nil, &list); err != nil {
+	for id, root := range roots {
+		got, err := a.postsSince(id, root)
+		if ae := (*apiError)(nil); id != a.dmID && errors.As(err, &ae) && ae.status < 500 {
+			log.Printf("catch-up skips channel %s: %v", id, err) // the bot left it, or it or the pane's thread was deleted
+			continue
+		}
+		if err != nil {
 			return err
 		}
-		posts = slices.AppendSeq(posts, maps.Values(list.Posts))
+		posts = append(posts, got...)
 	}
 	slices.SortFunc(posts, func(x, y post) int { return cmp.Compare(x.CreateAt, y.CreateAt) })
 	for _, p := range posts {
@@ -271,6 +275,24 @@ func (a *app) catchUp() error {
 		}
 	}
 	return nil
+}
+
+// postsSince fetches a channel's posts sent after the last one handled. In a linked channel, those sent
+// before the pane's root post were ignored when sent, as the channel was not linked yet, so they are left out.
+func (a *app) postsSince(channelID, rootID string) ([]post, error) {
+	since := a.lastPost
+	if rootID != "" {
+		var root post
+		if err := a.api(http.MethodGet, "/posts/"+rootID, nil, &root); err != nil {
+			return nil, err
+		}
+		since = max(since, root.CreateAt)
+	}
+	var list struct{ Posts map[string]post }
+	if err := a.api(http.MethodGet, fmt.Sprintf("/channels/%s/posts?since=%d", channelID, since), nil, &list); err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(slices.Collect(maps.Values(list.Posts)), func(p post) bool { return p.CreateAt <= since }), nil
 }
 
 // connectedMessage announces a WebSocket connection: the daemon's first, or a reconnect after the
@@ -409,7 +431,7 @@ func (a *app) stripMention(msg string) (string, bool) {
 		return msg, false
 	}
 	// Mattermost usernames hold letters, digits, ".", "-" and "_"; a trailing "." ends the sentence.
-	re := regexp.MustCompile(`(?i)(^|[^\w.@-])@` + regexp.QuoteMeta(a.botName) + `\.?([^\w-]|$)`)
+	re := regexp.MustCompile(`(?i)(^|[^\w.@-])@` + regexp.QuoteMeta(a.botName) + `\.?([^\w.-]|$)`)
 	out := msg
 	for next := re.ReplaceAllString(out, "$1$2"); next != out; next = re.ReplaceAllString(out, "$1$2") {
 		out = next

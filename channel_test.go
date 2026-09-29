@@ -72,6 +72,7 @@ func TestChannelControl(t *testing.T) {
 		{ID: "c6", ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr in the pane's thread", CreateAt: 106},
 		{ID: "c7", ChannelID: "ch1", RootID: "c4", UserID: "bob-id", Message: "@herdr rm -rf /", CreateAt: 107},
 		{ID: "c8", ChannelID: "ch1", UserID: "alice-id", Message: "@herdr hook", Props: map[string]any{"from_webhook": "true"}, CreateAt: 108},
+		{ID: "c9", ChannelID: "ch1", UserID: "alice-id", Message: "ping @herdr.vo about it", CreateAt: 109},
 	} {
 		if err := e.a.handleEvent(posted(p)); err != nil {
 			t.Fatal(err)
@@ -113,6 +114,41 @@ func TestChannelControl(t *testing.T) {
 	last := e.mm.snapshot()[len(e.mm.snapshot())-1]
 	if last.ChannelID != "ch1" || last.RootID != root || last.Message != "@alice Done." {
 		t.Fatalf("reply = %+v, want it in the question's thread tagging the asker", last)
+	}
+}
+
+func TestChannelCatchUp(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	handled := e.mm.snapshot()[0].CreateAt
+	e.mm.add(post{ChannelID: "ch1", UserID: "alice-id", Message: "@herdr run the migration"}) // ch1 is not linked yet
+	e.mm.add(post{ChannelID: "ch1", UserID: "bob-id", Message: "@herdr hi"})
+	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
+		t.Fatal(err)
+	}
+	e.mm.add(post{ChannelID: "ch1", UserID: "alice-id", Message: "@herdr run the tests"})
+	e.mm.add(post{ChannelID: "dm", UserID: "alice-id", Message: "hello"})
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w2:p1"] = &pane{ChannelID: "gone", RootID: "deleted"} // the bot cannot read it any more
+		return nil
+	})
+	n := len(e.mm.snapshot())
+	e.a.lastPost = handled // all of the above was sent while the WebSocket was down
+	if err := e.a.catchUp(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.prompts(); got != "w1:p1|run the tests\n" {
+		t.Fatalf("prompts = %q, want only the mention sent once the channel was linked", got)
+	}
+	var got []string
+	for _, p := range e.mm.snapshot()[n:] {
+		got = append(got, p.ChannelID+"|"+p.Message)
+	}
+	if want := []string{"ch1|" + catalog["en"]["prompt.late"], "dm|" + catalog["en"]["help"]}; !slices.Equal(got, want) {
+		t.Fatalf("answers = %q, want %q", got, want)
 	}
 }
 
