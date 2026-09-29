@@ -460,6 +460,7 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
+	Name       string `json:"name,omitempty"`        // herdr's name for the pane, kept by sync for the stop notice
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
@@ -609,6 +610,9 @@ func (a *app) sync(id string, p *pane) error {
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
 	}
+	if names, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
+		p.Name = names[id]
+	}
 	var patchErr error
 	if p.Status != prev {
 		patchErr = a.patchPost(p.RootID, rootMessage(id, p))
@@ -686,8 +690,8 @@ func (a *app) postStopped(id string, p *pane) error {
 	if p.Status == "closed" {
 		what = "Pane closed, mirroring stopped"
 	}
-	if names, _ := a.names(); names[id] != "" { // a missing name only leaves it out of the notice
-		name = "**" + names[id] + "** · "
+	if p.Name != "" {
+		name = "**" + p.Name + "** · "
 	}
 	msg := fmt.Sprintf("%s %s for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
 		emoji[p.Status], what, name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)

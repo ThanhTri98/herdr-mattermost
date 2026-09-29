@@ -206,6 +206,8 @@ func TestStatusToPostFlow(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "idle")
 	e.appendTranscript(t, assistant("u1", "m1", "text", "old answer", false))
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
 
 	if err := e.a.toggle("w1:p1"); err != nil {
 		t.Fatal(err)
@@ -277,8 +279,6 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("dialog post = %q", d.Message)
 	}
 
-	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
-	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
 	if err := e.a.toggle("w1:p1"); err != nil { // switch off
 		t.Fatal(err)
 	}
@@ -342,15 +342,21 @@ func TestPaneMovedKeepsThread(t *testing.T) {
 func TestPaneClosedStopsMirroring(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "idle")
+	panesJSON := filepath.Join(e.herdrDir, "panes.json")
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
 	if err := e.a.toggle("w1:p1"); err != nil {
 		t.Fatal(err)
 	}
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","label":"web"}]}}`), 0o644)
+	e.event(t, "pane.agent_status_changed", "w1:p1") // picks up the rename
+	os.Remove(panesJSON)                             // herdr no longer lists a closed pane
 	e.event(t, "pane.closed", "w1:p1")
 	posts := e.mm.snapshot()
 	if !strings.Contains(posts[0].Message, "Pane closed") {
 		t.Fatalf("root = %q", posts[0].Message)
 	}
-	want := "⚫ Pane closed, mirroring stopped for pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	want := "⚫ Pane closed, mirroring stopped for **web** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
 	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
 		t.Fatalf("close notice = %+v, want one top-level %q", posts, want)
 	}
