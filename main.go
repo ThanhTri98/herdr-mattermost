@@ -569,7 +569,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		}
 		next := rs
 		if i := slices.IndexFunc(rs, func(r reply) bool { return slices.Contains(r.uuids, p.LastReply) }); i >= 0 {
-			next = rs[i:]
+			next = rs[i:] // the turn handled gained text since, as when it is auto-continued after a usage limit
 			if rs[i].uuid == p.LastReply {
 				next = rs[i+1:]
 			}
