@@ -1,0 +1,28 @@
+id = "herdr-mattermost"
+name = "Mattermost"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Mirror agent panes into a Mattermost DM and type thread replies into the agent"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["go", "build", "-o", "herdr-mm", "."]
+
+[[startup]]
+id = "daemon"
+command = ["sh", "-c", "exec ./herdr-mm start"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle Mattermost mirroring"
+description = "Start or stop mirroring this pane's agent into the Mattermost DM"
+contexts = ["pane"]
+command = ["sh", "-c", "exec ./herdr-mm toggle"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "-c", "exec ./herdr-mm event"]
+
+[[events]]
+on = "pane.closed"
+command = ["sh", "-c", "exec ./herdr-mm event"]
