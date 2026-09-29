@@ -434,6 +434,14 @@ func TestPromptedFollowsThread(t *testing.T) {
 	idle("📥 Received - the agent is working on it.")
 	e.appendTranscript(t, assistant("t16", "m8", "text", "Thread answer.", false))
 	idle("Thread answer.")
+
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(strings.Repeat("─", 40)+"\n Do you want to proceed?\n ❯ 1. Yes\n"), 0o644)
+	e.appendTranscript(t, typed("t17", "clean the build"), assistant("t18", "m9", "tool_use", "", false))
+	e.setAgent(t, "blocked")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "Thread answer." {
+		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
+	}
 }
 
 func TestLastReplyAndTruncate(t *testing.T) {
