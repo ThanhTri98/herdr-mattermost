@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -424,20 +425,20 @@ func (a *app) sync(id string, p *pane) error {
 }
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
-// once each. A reply is posted only when its turn was prompted from the thread: the turn's prompt in
-// the transcript is the text the daemon typed. Turns typed in the terminal stay off Mattermost.
+// once each. A reply is posted only when its turn was prompted from the thread: one of the turn's
+// prompts in the transcript is the text the daemon typed. Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
-		text, uuid, prompt, err := lastReply(a.transcript(info))
+		text, uuid, prompts, err := lastReply(a.transcript(info))
 		if err != nil {
 			return err
 		}
 		if uuid != "" && uuid != p.LastReply {
-			if p.Prompted != "" && sameText(prompt, p.Prompted) {
+			if p.Prompted != "" && slices.ContainsFunc(prompts, func(s string) bool { return sameText(s, p.Prompted) }) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
 				}
@@ -564,39 +565,57 @@ func sameText(a, b string) bool {
 	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
 }
 
+// tag returns the text inside the first <name>...</name> in s.
+func tag(s, name string) string {
+	_, v, _ := strings.Cut(s, "<"+name+">")
+	v, _, _ = strings.Cut(v, "</"+name+">")
+	return v
+}
+
 // lastReply returns the text of the newest main-thread assistant message in a Claude transcript, the
-// uuid of its last entry and the prompt typed before it. Claude writes one entry per content block,
+// uuid of its last entry and the prompts typed in its turn. Claude writes one entry per content block,
 // so text is gathered by message id.
-func lastReply(path string) (text, uuid, prompt string, err error) {
+func lastReply(path string) (text, uuid string, prompts []string, err error) {
 	if path == "" {
-		return "", "", "", nil
+		return "", "", nil, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", "", err
+		return "", "", nil, err
 	}
 	defer f.Close()
-	var msgID, lastPrompt string
-	var texts []string
+	var msgID string
+	var texts, turn []string
 	r := bufio.NewReader(f) // not a Scanner: tool results make lines longer than its buffer
 	for {
 		line, readErr := r.ReadBytes('\n')
 		var e struct {
-			Type        string
-			IsSidechain bool
-			IsMeta      bool
-			UUID        string
-			Message     struct {
+			Type             string
+			IsSidechain      bool
+			IsMeta           bool
+			IsCompactSummary bool
+			Origin           struct{ Kind string }
+			UUID             string
+			Attachment       struct{ CommandMode, Prompt string }
+			Message          struct {
 				ID      string
 				Content json.RawMessage
 			}
 		}
-		// A typed prompt is a user entry whose content is a plain string; tool results are arrays.
-		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta {
+		// A typed prompt starts a turn as a user entry whose content is a plain string (tool results are
+		// arrays, compaction summaries and task notifications are not typed); a prompt typed while the
+		// agent works is queued into the running turn as an attachment.
+		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
 			var s string
 			if json.Unmarshal(e.Message.Content, &s) == nil {
-				lastPrompt = s
+				if name := tag(s, "command-name"); name != "" {
+					s = name + " " + tag(s, "command-args") // a slash command is recorded as tags
+				}
+				turn = []string{s}
 			}
+		}
+		if bytes.Contains(line, []byte(`"queued_command"`)) && json.Unmarshal(line, &e) == nil && e.Attachment.CommandMode == "prompt" && !e.IsSidechain {
+			turn = append(turn, e.Attachment.Prompt)
 		}
 		if bytes.Contains(line, []byte(`"assistant"`)) && json.Unmarshal(line, &e) == nil && e.Type == "assistant" && !e.IsSidechain {
 			var content []struct{ Type, Text string }
@@ -611,14 +630,14 @@ func lastReply(path string) (text, uuid, prompt string, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid, prompt = append(texts, t...), e.UUID, lastPrompt
+				texts, uuid, prompts = append(texts, t...), e.UUID, turn
 			}
 		}
 		if readErr == io.EOF {
-			return strings.Join(texts, "\n\n"), uuid, prompt, nil
+			return strings.Join(texts, "\n\n"), uuid, prompts, nil
 		}
 		if readErr != nil {
-			return "", "", "", readErr
+			return "", "", nil, readErr
 		}
 	}
 }
