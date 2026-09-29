@@ -428,16 +428,22 @@ func TestPromptedFollowsThread(t *testing.T) {
 	e.appendTranscript(t, `{"type":"user","uuid":"t11","imagePasteIds":[1],"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}},{"type":"text","text":"why does this fail?"}]}}`,
 		assistant("t12", "m6", "text", "It fails because of the image.", false))
 	idle("Config is fine.")
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "queued from the thread", CreateAt: 104}))
+	e.appendTranscript(t, typed("t13", "typed in the terminal"), assistant("t14", "m7", "text", "terminal answer", false), typed("t15", "queued from the thread"))
+	idle("📥 Received - the agent is working on it.")
+	e.appendTranscript(t, assistant("t16", "m8", "text", "Thread answer.", false))
+	idle("Thread answer.")
 }
 
 func TestLastReplyAndTruncate(t *testing.T) {
-	if text, uuid, prompts, err := lastReply(""); text != "" || uuid != "" || prompts != nil || err != nil {
-		t.Fatalf("no transcript: %q %q %q %v", text, uuid, prompts, err)
+	if text, uuid, prompts, turn, err := lastReply(""); text != "" || uuid != "" || prompts != nil || turn != nil || err != nil {
+		t.Fatalf("no transcript: %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	e := newTestEnv(t)
-	e.appendTranscript(t, `{"type":"user","message":{"content":"a plain string"}}`, assistant("u1", "m1", "text", "hi", false), "not json")
-	if text, uuid, prompts, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || len(prompts) != 1 || prompts[0] != "a plain string" || err != nil {
-		t.Fatalf("got %q %q %q %v", text, uuid, prompts, err)
+	e.appendTranscript(t, `{"type":"user","message":{"content":"a plain string"}}`, assistant("u1", "m1", "text", "hi", false), "not json", typed("u2", "next"))
+	if text, uuid, prompts, turn, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || len(prompts) != 1 || prompts[0] != "a plain string" || len(turn) != 1 || turn[0] != "next" || err != nil {
+		t.Fatalf("got %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	long := strings.Repeat("é", maxPost+10)
 	if got := truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {

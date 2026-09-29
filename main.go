@@ -362,7 +362,7 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
-		_, p.LastReply, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
+		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
 		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(id, p)); err != nil {
 			return err
 		}
@@ -439,15 +439,16 @@ func (a *app) sync(id string, p *pane) error {
 }
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
-// once each. Both are posted only when the turn in effect was prompted from the thread: one of the
-// turn's prompts in the transcript is a recent text the daemon typed. Turns typed in the terminal stay off Mattermost.
+// once each. A reply is posted only when its turn was prompted from the thread, and a dialog only when
+// the turn in effect is: one of the turn's prompts in the transcript is a recent text the daemon typed.
+// Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
-		text, uuid, turn, err := lastReply(a.transcript(info))
+		text, uuid, prompts, _, err := lastReply(a.transcript(info))
 		if err != nil {
 			return err
 		}
@@ -458,7 +459,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			// prompt, not the one that started the task, so a task started in the terminal that finishes
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
-			if p.fromThread(turn) {
+			if p.fromThread(prompts) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
 				}
@@ -466,7 +467,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			p.LastReply = uuid
 		}
 	case "blocked":
-		_, _, turn, err := lastReply(a.transcript(info))
+		_, _, _, turn, err := lastReply(a.transcript(info))
 		if err != nil || !p.fromThread(turn) {
 			return err
 		}
@@ -609,15 +610,15 @@ func tag(s, name string) string {
 }
 
 // lastReply returns the text of the newest main-thread assistant message in a Claude transcript, the
-// uuid of its last entry and the prompts typed in the turn in effect at the end of the transcript.
-// Claude writes one entry per content block, so text is gathered by message id.
-func lastReply(path string) (text, uuid string, turn []string, err error) {
+// uuid of its last entry, the prompts typed in its turn and those of the turn in effect at the end of
+// the transcript. Claude writes one entry per content block, so text is gathered by message id.
+func lastReply(path string) (text, uuid string, prompts, turn []string, err error) {
 	if path == "" {
-		return "", "", nil, nil
+		return "", "", nil, nil, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, nil, err
 	}
 	defer f.Close()
 	var msgID string
@@ -675,14 +676,14 @@ func lastReply(path string) (text, uuid string, turn []string, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid = append(texts, t...), e.UUID
+				texts, uuid, prompts = append(texts, t...), e.UUID, turn
 			}
 		}
 		if readErr == io.EOF {
-			return strings.Join(texts, "\n\n"), uuid, turn, nil
+			return strings.Join(texts, "\n\n"), uuid, prompts, turn, nil
 		}
 		if readErr != nil {
-			return "", "", nil, readErr
+			return "", "", nil, nil, readErr
 		}
 	}
 }
