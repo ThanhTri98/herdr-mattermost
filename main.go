@@ -3,7 +3,8 @@
 //	herdr-mm start   startup hook: launch the daemon detached (a second daemon exits at once)
 //	herdr-mm daemon  hold the Mattermost WebSocket and type thread replies into agents
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
-//	herdr-mm event   event hook: sync a mirrored pane's thread on status change or close
+//	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
+//	herdr-mm stop    action: stop the daemon and wait for it to exit
 package main
 
 import (
@@ -18,7 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -26,7 +27,7 @@ import (
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event")
+		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event|stop")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -43,6 +44,8 @@ func main() {
 			}
 		case "event":
 			err = a.event(os.Getenv("HERDR_PLUGIN_EVENT"), []byte(os.Getenv("HERDR_PLUGIN_EVENT_JSON")))
+		case "stop":
+			err = a.stop()
 		default:
 			err = fmt.Errorf("unknown command")
 		}
@@ -53,9 +56,10 @@ func main() {
 }
 
 type app struct {
-	mmURL, token, user                     string // from $HERDR_PLUGIN_CONFIG_DIR/.env
-	envPath, stateDir, herdrBin, claudeDir string
-	botID, userID, dmID                    string // filled by connect
+	mmURL, token, user                               string // from $HERDR_PLUGIN_CONFIG_DIR/.env
+	envPath, stateDir, herdrBin, claudeDir, pluginID string
+	botID, userID, dmID                              string // filled by connect
+	lastPost                                         int64  // create_at of the last DM post the daemon handled
 }
 
 func load() (*app, error) {
@@ -63,9 +67,12 @@ func load() (*app, error) {
 	if configDir == "" || stateDir == "" {
 		return nil, errors.New("HERDR_PLUGIN_CONFIG_DIR and HERDR_PLUGIN_STATE_DIR are not set; herdr-mm runs as a herdr plugin")
 	}
-	a := &app{envPath: filepath.Join(configDir, ".env"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
+	a := &app{envPath: filepath.Join(configDir, ".env"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR"), pluginID: os.Getenv("HERDR_PLUGIN_ID")}
 	if a.herdrBin == "" {
 		a.herdrBin = "herdr"
+	}
+	if a.pluginID == "" {
+		a.pluginID = "herdr-mattermost"
 	}
 	if a.claudeDir == "" {
 		home, err := os.UserHomeDir()
@@ -138,15 +145,63 @@ func (a *app) daemon() error {
 	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		return nil // another daemon is already running
 	}
+	if err := lock.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(lock, os.Getpid()); err != nil { // read by stop
+		return err
+	}
 	if err := a.requireMM(); err != nil {
 		return err
 	}
-	if err := a.connect(); err != nil {
+	if err := a.connectRetry(); err != nil {
 		return err
 	}
+	b, _ := os.ReadFile(filepath.Join(a.stateDir, "last_post"))
+	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
+		a.lastPost = n // otherwise it stays at the DM's newest post, set by connect
+	}
 	log.Printf("daemon started: obeying @%s in DM %s", a.user, a.dmID)
-	a.listen()
+	return a.listen()
+}
+
+// stop ends the running daemon and waits for it to release its lock.
+func (a *app) stop() error {
+	lock, err := os.OpenFile(filepath.Join(a.stateDir, "daemon.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		fmt.Println("no daemon is running")
+		return nil
+	}
+	var pid int
+	if _, err := fmt.Fscan(lock, &pid); err != nil {
+		return fmt.Errorf("daemon.lock: %w", err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return err
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	fmt.Println("daemon stopped")
 	return nil
+}
+
+// pluginOn reports whether the herdr server is running with this plugin enabled.
+func (a *app) pluginOn() bool {
+	var status struct{ Running bool }
+	out, err := a.herdr("status", "server", "--json")
+	if err != nil || json.Unmarshal(out, &status) != nil || !status.Running {
+		return false
+	}
+	var list struct {
+		Result struct{ Plugins []struct{ Enabled bool } }
+	}
+	out, err = a.herdr("plugin", "list", "--plugin", a.pluginID, "--json")
+	return err == nil && json.Unmarshal(out, &list) == nil && len(list.Result.Plugins) == 1 && list.Result.Plugins[0].Enabled
 }
 
 // pane is what is remembered about a mirrored pane, keyed by pane id in panes.json.
@@ -225,7 +280,11 @@ func (a *app) event(name string, raw []byte) error {
 	var ev struct {
 		Event string
 		Data  struct {
-			PaneID string `json:"pane_id"`
+			PaneID         string `json:"pane_id"`
+			PreviousPaneID string `json:"previous_pane_id"` // pane.moved
+			Pane           struct {
+				PaneID string `json:"pane_id"`
+			}
 		}
 	}
 	if err := json.Unmarshal(raw, &ev); err != nil {
@@ -234,19 +293,28 @@ func (a *app) event(name string, raw []byte) error {
 	if name == "" {
 		name = ev.Event
 	}
-	id := ev.Data.PaneID
+	name = strings.ReplaceAll(name, ".", "_")
+	id, oldID := ev.Data.PaneID, ev.Data.PaneID
+	if name == "pane_moved" { // a move to another workspace gives the pane a new id
+		id, oldID = ev.Data.Pane.PaneID, ev.Data.PreviousPaneID
+	}
 	return a.withState(func(panes map[string]*pane) error {
-		p := panes[id]
+		p := panes[oldID]
 		if p == nil {
 			return nil // not mirrored: the hook fires for every pane
 		}
 		if err := a.requireMM(); err != nil {
 			return err
 		}
-		if strings.ReplaceAll(name, ".", "_") == "pane_closed" {
+		switch name {
+		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
 			return a.patchPost(p.RootID, rootMessage(id, p))
+		case "pane_moved":
+			delete(panes, oldID)
+			panes[id] = p
+			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.sync(id, p))
 		}
 		return a.sync(id, p)
 	})
@@ -268,12 +336,16 @@ func (a *app) sync(id string, p *pane) error {
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
 	}
+	var patchErr error
 	if p.Status != prev {
-		if err := a.patchPost(p.RootID, rootMessage(id, p)); err != nil {
-			return err
-		}
+		patchErr = a.patchPost(p.RootID, rootMessage(id, p))
 	}
+	return errors.Join(patchErr, a.postNews(id, p, info))
+}
 
+// postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
+// once each.
+func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
@@ -387,8 +459,6 @@ func (a *app) agent(id string) (agentInfo, error) {
 	return r.Result.Agent, err
 }
 
-var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
-
 // transcript finds the agent's Claude session log, or "" when there is none.
 func (a *app) transcript(info agentInfo) string {
 	s := info.Session
@@ -398,11 +468,7 @@ func (a *app) transcript(info agentInfo) string {
 	if s.Kind == "path" {
 		return s.Value
 	}
-	path := filepath.Join(a.claudeDir, "projects", nonAlnum.ReplaceAllString(info.Cwd, "-"), s.Value+".jsonl")
-	if _, err := os.Stat(path); err == nil {
-		return path
-	}
-	// Claude shortens very long directory names, so look for the session in every project.
+	// Session ids are unique, and the pane's cwd need not be the directory Claude started in.
 	if m, _ := filepath.Glob(filepath.Join(a.claudeDir, "projects", "*", s.Value+".jsonl")); len(m) > 0 {
 		return m[0]
 	}

@@ -19,8 +19,19 @@ description = "Start or stop mirroring this pane's agent into the Mattermost DM"
 contexts = ["pane"]
 command = ["sh", "-c", "exec ./herdr-mm toggle"]
 
+[[actions]]
+id = "stop"
+title = "Stop Mattermost daemon"
+description = "Stop the daemon that types Mattermost replies into agents"
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "-c", "exec ./herdr-mm stop"]
+
 [[events]]
 on = "pane.agent_status_changed"
+command = ["sh", "-c", "exec ./herdr-mm event"]
+
+[[events]]
+on = "pane.moved"
 command = ["sh", "-c", "exec ./herdr-mm event"]
 
 [[events]]

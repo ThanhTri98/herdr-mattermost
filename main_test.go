@@ -2,20 +2,45 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// TestMain runs the real main in a child process started with HERDR_MM_MAIN=1.
+func TestMain(m *testing.M) {
+	if os.Getenv("HERDR_MM_MAIN") == "1" {
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
 
 // fakeMM is a Mattermost server that keeps posts in memory.
 type fakeMM struct {
-	mu    sync.Mutex
-	posts []*post
+	mu        sync.Mutex
+	posts     []*post
+	now       int64 // create_at of the newest post
+	failPatch bool  // answer post edits with 500
+	failLogin int   // answer this many logins with 503
+}
+
+// add stores a post as if someone else sent it.
+func (f *fakeMM) add(p post) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now++
+	p.ID, p.CreateAt = fmt.Sprintf("post%d", len(f.posts)+1), f.now
+	f.posts = append(f.posts, &p)
 }
 
 func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -26,6 +51,11 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v4")
+	if f.failLogin > 0 && path == "/users/me" {
+		f.failLogin--
+		http.Error(w, `{"message":"unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
 	switch {
 	case r.Method == "GET" && path == "/users/me":
 		fmt.Fprint(w, `{"id":"bot"}`)
@@ -36,9 +66,21 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && path == "/posts":
 		p := &post{}
 		json.NewDecoder(r.Body).Decode(p)
-		p.ID = fmt.Sprintf("post%d", len(f.posts)+1)
+		f.now++
+		p.ID, p.UserID, p.CreateAt = fmt.Sprintf("post%d", len(f.posts)+1), "bot", f.now
 		f.posts = append(f.posts, p)
 		json.NewEncoder(w).Encode(p)
+	case r.Method == "GET" && path == "/channels/dm/posts":
+		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
+		list := map[string]map[string]*post{"posts": {}}
+		for _, p := range f.posts {
+			if p.ChannelID == "dm" && p.CreateAt > since {
+				list["posts"][p.ID] = p
+			}
+		}
+		json.NewEncoder(w).Encode(list)
+	case r.Method == "PUT" && strings.HasSuffix(path, "/patch") && f.failPatch:
+		http.Error(w, `{"message":"edit time limit"}`, http.StatusInternalServerError)
 	case r.Method == "PUT" && strings.HasSuffix(path, "/patch"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/posts/"), "/patch")
 		for _, p := range f.posts {
@@ -70,6 +112,10 @@ d=$(dirname "$0")
 case "$1 $2" in
 "agent get") cat "$d/agent.json" ;;
 "agent read") cat "$d/screen.txt" ;;
+"status server") [ -e "$d/stopped" ] && echo '{"running":false}' || echo '{"running":true}' ;;
+"plugin list")
+  [ -e "$d/disabled" ] && on=false || on=true
+  [ "$3 $4 $5" = "--plugin herdr-mattermost --json" ] && echo "{\"result\":{\"plugins\":[{\"plugin_id\":\"$4\",\"enabled\":$on}]}}" || echo '{"result":{"plugins":[]}}' ;;
 "agent prompt")
   printf '%s|%s\n' "$3" "$4" >> "$d/prompts.log"
   if [ -e "$d/blocked" ]; then echo '{"error":{"code":"agent_blocked","message":"blocked"},"id":"x"}' >&2; exit 1; fi
@@ -96,11 +142,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o755)
 	claude := filepath.Join(dir, "claude")
-	// The real rule: every non-alphanumeric character of the cwd becomes '-'.
-	transcript := filepath.Join(claude, "projects", "-work-my-proj-x", "sess-1.jsonl")
+	// Not the pane's cwd: Claude may have been started in another directory.
+	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
 	os.MkdirAll(filepath.Dir(transcript), 0o755)
 	a := &app{mmURL: srv.URL, token: "tok", user: "alice", envPath: filepath.Join(dir, ".env"),
-		stateDir: state, herdrBin: filepath.Join(herdrDir, "herdr"), claudeDir: claude}
+		stateDir: state, herdrBin: filepath.Join(herdrDir, "herdr"), claudeDir: claude, pluginID: "herdr-mattermost"}
 	return &testEnv{a, mm, herdrDir, transcript}
 }
 
@@ -204,6 +250,45 @@ func TestStatusToPostFlow(t *testing.T) {
 	}
 }
 
+func TestReplyPostedWhenRootEditFails(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "working")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	e.mm.mu.Lock()
+	e.mm.failPatch = true
+	e.mm.mu.Unlock()
+	e.appendTranscript(t, assistant("u1", "m1", "text", "Done.", false))
+	e.setAgent(t, "done")
+	if err := e.a.event("pane.agent_status_changed", []byte(`{"data":{"pane_id":"w1:p1"}}`)); err == nil || !strings.Contains(err.Error(), "edit time limit") {
+		t.Fatalf("event = %v, want the edit error", err)
+	}
+	if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].Message != "Done." {
+		t.Fatalf("the reply must be posted even when the root edit fails: %+v", posts)
+	}
+}
+
+func TestPaneMovedKeepsThread(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"event":"pane_moved","data":{"type":"pane_moved","previous_pane_id":"w1:p1","previous_workspace_id":"w1","previous_tab_id":"w1:t1","pane":{"pane_id":"w2:p1","workspace_id":"w2"}}}`
+	if err := e.a.event("pane.moved", []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	posts := e.mm.snapshot()
+	if len(posts) != 1 || !strings.Contains(posts[0].Message, "`w2:p1`") {
+		t.Fatalf("root post should name the new pane id: %+v", posts)
+	}
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "go on", CreateAt: 100}))
+	if got := e.prompts(); got != "w2:p1|go on\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+}
+
 func TestPaneClosedStopsMirroring(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "idle")
@@ -260,7 +345,7 @@ func (e *testEnv) prompts() string {
 
 func TestReplyPromptsAgent(t *testing.T) {
 	e := mirroredEnv(t)
-	e.a.handleEvent(posted(post{ID: "r1", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "--fix the bug"}))
+	e.a.handleEvent(posted(post{ID: "r1", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "--fix the bug", CreateAt: 1}))
 	if got := e.prompts(); got != "w1:p1|--fix the bug\n" {
 		t.Fatalf("prompts = %q", got)
 	}
@@ -269,13 +354,13 @@ func TestReplyPromptsAgent(t *testing.T) {
 	}
 
 	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
-	e.a.handleEvent(posted(post{ID: "r2", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "yes"}))
+	e.a.handleEvent(posted(post{ID: "r2", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "yes", CreateAt: 2}))
 	posts := e.mm.snapshot()
 	if len(posts) != 1 || posts[0].RootID != "root1" || !strings.Contains(posts[0].Message, "Approve or answer it on the machine") {
 		t.Fatalf("blocked answer = %+v", posts)
 	}
 
-	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List "}))
+	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
 	if len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "w1:p1") || !strings.Contains(posts[1].Message, "/_redirect/pl/root1") {
 		t.Fatalf("list answer = %+v", posts)
@@ -290,7 +375,7 @@ func TestIgnoresEveryoneButMMUser(t *testing.T) {
 		{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "hook", Props: map[string]any{"from_webhook": "true"}},
 		{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "bot", Props: map[string]any{"from_bot": "true"}},
 		{ChannelID: "town-square", RootID: "root1", UserID: "alice-id", Message: "wrong channel"},
-		{ChannelID: "dm", RootID: "other-thread", UserID: "alice-id", Message: "not mirrored"},
+		{ChannelID: "dm", RootID: "other-thread", UserID: "alice-id", Message: "not mirrored", CreateAt: 1},
 		{ChannelID: "dm", UserID: "bob-id", Message: "list"},
 	} {
 		e.a.handleEvent(posted(p))
@@ -300,6 +385,105 @@ func TestIgnoresEveryoneButMMUser(t *testing.T) {
 	}
 	if posts := e.mm.snapshot(); len(posts) != 0 {
 		t.Fatalf("answered an ignored post: %+v", posts)
+	}
+}
+
+func TestCatchUpDeliversMissedReplies(t *testing.T) {
+	e := mirroredEnv(t)
+	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "handled before"})
+	e.a.lastPost = 1
+	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 1"})
+	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "bob-id", Message: "not alice"})
+	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "", DeleteAt: 9})
+	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 2"})
+	if err := e.a.catchUp(); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+	var notes int
+	for _, p := range e.mm.snapshot() {
+		if p.UserID == "bot" && p.RootID == "root1" && strings.Contains(p.Message, "Delivered late") {
+			notes++
+		}
+	}
+	if notes != 2 {
+		t.Fatalf("want a late note per caught-up reply, got %d: %+v", notes, e.mm.snapshot())
+	}
+
+	missed2 := e.mm.snapshot()[4]
+	e.a.handleEvent(posted(missed2)) // the WebSocket delivering it too must not prompt twice
+	if err := e.a.catchUp(); err != nil {
+		t.Fatal(err)
+	}
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "live", CreateAt: 100}))
+	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\nw1:p1|live\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.a.stateDir, "last_post")); string(b) != "100" {
+		t.Fatalf("last_post = %q", b)
+	}
+}
+
+func TestPluginOffStopsDaemon(t *testing.T) {
+	for _, flag := range []string{"disabled", "stopped"} {
+		e := mirroredEnv(t)
+		os.WriteFile(filepath.Join(e.herdrDir, flag), nil, 0o644)
+		err := e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "hi", CreateAt: 1}))
+		if !errors.Is(err, errPluginOff) {
+			t.Fatalf("%s: handleEvent = %v", flag, err)
+		}
+		if got := e.prompts(); got != "" {
+			t.Fatalf("%s: prompted %q", flag, got)
+		}
+		if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || !strings.Contains(posts[0].Message, "not typed into any agent") {
+			t.Fatalf("%s: answer = %+v", flag, posts)
+		}
+	}
+}
+
+func TestConnectRetriesUntilMattermostAnswers(t *testing.T) {
+	defer func(d time.Duration) { retryDelay = d }(retryDelay)
+	retryDelay = time.Millisecond
+	e := newTestEnv(t)
+	e.mm.failLogin = 2
+	if err := e.a.connectRetry(); err != nil || e.a.dmID != "dm" || e.mm.failLogin != 0 {
+		t.Fatalf("connectRetry = %v, dm %q, logins left to fail %d", err, e.a.dmID, e.mm.failLogin)
+	}
+	e.a.token = "wrong"
+	if err := e.a.connectRetry(); err == nil || !strings.Contains(err.Error(), "mattermost login failed") {
+		t.Fatalf("a rejected token must not be retried: %v", err)
+	}
+}
+
+func TestStopEndsDaemon(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.a.stop(); err != nil {
+		t.Fatalf("stop with no daemon = %v", err)
+	}
+	// Mattermost is unreachable, so the daemon sits in its connect retry loop.
+	os.WriteFile(e.a.envPath, []byte("MM_URL=http://127.0.0.1:1\nMM_BOT_TOKEN=tok\nMM_USER=alice\n"), 0o600)
+	cmd := exec.Command(os.Args[0], "daemon")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	for i := 0; ; i++ {
+		if b, _ := os.ReadFile(filepath.Join(e.a.stateDir, "daemon.lock")); string(b) == strconv.Itoa(cmd.Process.Pid) {
+			break
+		}
+		if i == 500 {
+			t.Fatal("the daemon never took its lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := e.a.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil || !strings.Contains(err.Error(), "terminated") {
+		t.Fatalf("daemon exit = %v, want terminated", err)
 	}
 }
 
