@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -602,7 +603,7 @@ func TestLastReplyAndTruncate(t *testing.T) {
 		t.Fatalf("got %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	long := strings.Repeat("é", maxPost+10)
-	if got := truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {
+	if got := e.a.truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {
 		t.Fatalf("truncate: %d runes", len([]rune(got)))
 	}
 }
@@ -860,9 +861,52 @@ func TestPaneNames(t *testing.T) {
 }
 
 func TestNumbered(t *testing.T) {
-	got := numbered([]string{"a", "b", "a", "", "a", ""}, func(s string) string { return s })
-	if want := []string{"a", "b", "a #2", "", "a #3", " #2"}; !slices.Equal(got, want) {
+	got := numbered(map[string]string{"w1:p1": "a", "w1:p2": "b", "w2:p1": "a", "w3:p1": "", "w4:p1": "a", "w5:p1": ""})
+	if want := map[string]string{"w1:p1": "a", "w1:p2": "b", "w2:p1": "a #2", "w3:p1": "", "w4:p1": "a #3", "w5:p1": ""}; !maps.Equal(got, want) {
 		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+}
+
+// TestSameLabelEverywhere numbers panes over every agent pane herdr reports and every mirrored pane,
+// so the popup, the list reply, the root post and the stop notice agree.
+func TestSameLabelEverywhere(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	agents, panesJSON := filepath.Join(e.herdrDir, "agents.json"), filepath.Join(e.herdrDir, "panes.json")
+	os.WriteFile(agents, []byte(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p2"}]}}`), 0o644)
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"},
+		{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
+
+	if err := e.a.toggle("w1:p2"); err != nil { // w1:p1 is not mirrored, yet it is the first "api"
+		t.Fatal(err)
+	}
+	if m := e.mm.snapshot()[0].Message; !strings.Contains(m, "· **api #2** · claude") {
+		t.Fatalf("root = %q", m)
+	}
+	rows, err := e.a.rows()
+	if err != nil || len(rows) != 2 || rows[0].Name != "api" || rows[1].ID != "w1:p2" || rows[1].Name != "api #2" {
+		t.Fatalf("rows = %+v %v", rows, err)
+	}
+	if got := e.a.topLevel("list"); !strings.Contains(got, "· **api #2** · claude") {
+		t.Fatalf("list = %q", got)
+	}
+	if err := e.a.toggle("w1:p2"); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.mm.snapshot()[1].Message; !strings.Contains(n, "for **api #2** · claude") {
+		t.Fatalf("stop notice = %q", n)
+	}
+
+	if err := e.a.toggle("w1:p2"); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(agents, []byte(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p2"}]}}`), 0o644)
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	e.event(t, "pane.agent_status_changed", "w1:p2") // the root post drops the number at its next update
+	if m := e.mm.snapshot()[2].Message; !strings.Contains(m, "· **api** · claude") {
+		t.Fatalf("root after w1:p1 closed = %q", m)
 	}
 }
 
@@ -995,6 +1039,12 @@ func TestCatalogComplete(t *testing.T) {
 			t.Errorf("no text for status %q", status)
 		}
 	}
+	verbs := regexp.MustCompile(`%[a-z]`)
+	for key, en := range catalog["en"] {
+		if vi := catalog["vi"][key]; !slices.Equal(verbs.FindAllString(vi, -1), verbs.FindAllString(en, -1)) {
+			t.Errorf("%q takes different arguments in vi %q and en %q", key, vi, en)
+		}
+	}
 }
 
 func TestLanguageSwitch(t *testing.T) {
@@ -1018,5 +1068,16 @@ func TestLanguageSwitch(t *testing.T) {
 	e.a.switchLang()
 	if got := e.a.topLevel("list"); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
 		t.Fatalf("vi list = %q", got)
+	}
+	if got := e.a.truncate(strings.Repeat("x", 100), 50); !strings.HasSuffix(got, "\n… (đã cắt bớt)") {
+		t.Fatalf("vi truncate = %q", got)
+	}
+	e.a.token = ""
+	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN trong "+e.a.envPath {
+		t.Fatalf("vi toggle failure = %q", got)
+	}
+	e.a.token = "wrong"
+	if err := e.a.connect(); err == nil || !strings.HasPrefix(err.Error(), "đăng nhập Mattermost thất bại") {
+		t.Fatalf("vi connect = %v", err)
 	}
 }

@@ -11,12 +11,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +61,8 @@ func main() {
 		}
 	}
 	if cmd == "status" { // load failed; show why until closed
-		fmt.Printf("herdr-mm status: %v\n\n%s", err, catalog[lang(os.Getenv("HERDR_PLUGIN_STATE_DIR"))]["popup.close"])
+		texts := catalog[lang(os.Getenv("HERDR_PLUGIN_STATE_DIR"))]
+		fmt.Printf(texts["popup.error"]+"\n\n%s", err, texts["popup.close"])
 		waitQuit()
 		return
 	}
@@ -122,7 +125,7 @@ func (a *app) requireMM() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("missing %s in %s", strings.Join(missing, ", "), a.envPath)
+		return fmt.Errorf(a.t("err.missing"), strings.Join(missing, ", "), a.envPath)
 	}
 	return nil
 }
@@ -232,29 +235,16 @@ func (a *app) rows() ([]row, error) {
 	if err != nil {
 		return nil, err
 	}
-	var r struct {
-		Result struct{ Agents []listedAgent }
-	}
-	out, err := a.herdr("agent", "list")
-	if err == nil {
-		err = json.Unmarshal(out, &r)
-	}
-	if err != nil {
-		return nil, err
-	}
-	names, hidden, err := a.names()
+	labels, hidden, agents, err := a.labels(panes)
 	if err != nil {
 		return nil, err
 	}
 	var rows []row
-	for _, r := range listRows(r.Result.Agents, panes) {
+	for _, r := range listRows(agents, panes) {
 		if !hidden[r.ID] {
-			r.Name = names[r.ID]
+			r.Name = labels[r.ID]
 			rows = append(rows, r)
 		}
-	}
-	for i, n := range numbered(rows, func(r row) string { return r.Name }) {
-		rows[i].Name = n
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return rows, nil
@@ -279,26 +269,43 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// names maps each pane id to the name herdr shows for it, and marks the panes to leave out of the popup.
-func (a *app) names() (map[string]string, map[string]bool, error) {
+// labels names every agent pane herdr reports and every mirrored pane, numbered so a pane has the same
+// label in the popup and in every post; a mirrored pane herdr no longer lists keeps its last label. It
+// also returns herdr's agents and marks the panes to leave out of the popup.
+func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]bool, []listedAgent, error) {
 	var r struct {
 		Result struct {
+			Agents     []listedAgent
 			Panes      []herdrPane
 			Tabs       []herdrTab
 			Workspaces []herdrWorkspace
 		}
 	}
-	for _, kind := range []string{"pane", "tab", "workspace"} {
+	for _, kind := range []string{"agent", "pane", "tab", "workspace"} {
 		out, err := a.herdr(kind, "list")
 		if err == nil {
 			err = json.Unmarshal(out, &r)
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 	names, hidden := paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces)
-	return names, hidden, nil
+	set := map[string]string{}
+	for _, ag := range r.Result.Agents {
+		set[ag.PaneID] = names[ag.PaneID]
+	}
+	for id, p := range mirrored {
+		set[id] = cmp.Or(names[id], p.Name)
+	}
+	return numbered(set), hidden, r.Result.Agents, nil
+}
+
+// label sets p.Name to the pane's label; a failed lookup keeps the last one.
+func (a *app) label(id string, p *pane, mirrored map[string]*pane) {
+	if labels, _, _, err := a.labels(mirrored); err == nil && labels[id] != "" {
+		p.Name = labels[id]
+	}
 }
 
 // paneNames names a pane by its own label when renamed, otherwise by its workspace's label, followed
@@ -329,17 +336,16 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 	return names, hidden
 }
 
-// numbered returns the names of xs, sorted by id by the caller, with " #2", " #3" added to the
-// second and later of those that share a name.
-func numbered[T any](xs []T, name func(T) string) []string {
-	seen := map[string]int{}
-	var out []string
-	for _, x := range xs {
-		n := name(x)
-		if seen[n]++; seen[n] > 1 {
+// numbered maps pane ids to their names, with " #2", " #3" added to the second and later, in pane id
+// order, of those that share a name.
+func numbered(names map[string]string) map[string]string {
+	seen, out := map[string]int{}, map[string]string{}
+	for _, id := range slices.Sorted(maps.Keys(names)) {
+		n := names[id]
+		if seen[n]++; n != "" && seen[n] > 1 {
 			n += " #" + strconv.Itoa(seen[n])
 		}
-		out = append(out, n)
+		out[id] = n
 	}
 	return out
 }
@@ -395,7 +401,7 @@ func (a *app) popup() {
 			err = a.status(os.Stdout, rows, sel)
 		}
 		if err != nil {
-			fmt.Printf("herdr-mm status: %v\n", err)
+			fmt.Printf(a.t("popup.error")+"\n", err)
 		}
 		if msg != "" {
 			fmt.Printf("\n%s\n", msg)
@@ -440,7 +446,7 @@ func (a *app) popupToggle(r row) string {
 		err = a.start()
 	}
 	if err != nil {
-		return fmt.Sprintf("toggle %s: %v", r.Name, err)
+		return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 	}
 	return ""
 }
@@ -489,7 +495,7 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
-	Name       string `json:"name,omitempty"`        // herdr's name for the pane, kept by sync for the stop notice
+	Name       string `json:"name,omitempty"`        // the pane's label, kept by sync for the stop notice
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
@@ -558,6 +564,7 @@ func (a *app) toggle(id string) error {
 	}
 	return a.withState(func(panes map[string]*pane) error {
 		if p := panes[id]; p != nil {
+			a.label(id, p, panes)
 			delete(panes, id)
 			p.Status = "off"
 			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
@@ -570,14 +577,13 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
-		names, _, _ := a.names()
-		p.Name = names[id]
+		a.label(id, p, panes)
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
 		if p.RootID, err = a.createPost(a.dmID, "", a.rootMessage(p)); err != nil {
 			return err
 		}
 		panes[id] = p
-		return a.sync(id, p)
+		return a.sync(id, panes)
 	})
 }
 
@@ -613,22 +619,23 @@ func (a *app) event(name string, raw []byte) error {
 		}
 		switch name {
 		case "pane_closed":
+			a.label(id, p, panes)
 			delete(panes, id)
 			p.Status = "closed"
 			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
-			return a.sync(id, p)
 		}
-		return a.sync(id, p)
+		return a.sync(id, panes)
 	})
 }
 
 // sync brings a mirrored pane's thread up to date with the agent's live state. It asks herdr for the
 // state instead of trusting the event, and dedupes what it posts, so hooks that run late or out of
 // order neither lose nor repeat a reply.
-func (a *app) sync(id string, p *pane) error {
+func (a *app) sync(id string, panes map[string]*pane) error {
+	p := panes[id]
 	info, err := a.agent(id)
 	if he := (*herdrError)(nil); errors.As(err, &he) && he.Code == "agent_not_found" {
 		info, err = agentInfo{Status: "unknown"}, nil // the agent exited; the pane may get a new one
@@ -641,9 +648,7 @@ func (a *app) sync(id string, p *pane) error {
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
 	}
-	if names, _, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
-		p.Name = names[id]
-	}
+	a.label(id, p, panes)
 	var patchErr error
 	if p.Status != prev || p.Name != prevName {
 		patchErr = a.patchPost(p.RootID, a.rootMessage(p))
@@ -710,7 +715,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			return err
 		}
 		if d := dialog(string(screen)); d != p.LastDialog {
-			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, truncate(d, maxPost-500))
+			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, a.truncate(d, maxPost-500))
 			if _, err := a.createPost(p.ChannelID, p.RootID, msg); err != nil {
 				return err
 			}
@@ -765,8 +770,8 @@ func baseName(path string) string {
 
 const maxPost = 16383 // Mattermost's post length limit, in characters
 
-func truncate(s string, max int) string {
-	const note = "\n… (truncated)"
+func (a *app) truncate(s string, max int) string {
+	note := a.t("truncated")
 	if utf8.RuneCountInString(s) <= max {
 		return s
 	}

@@ -34,6 +34,12 @@ var catalog = map[string]map[string]string{
 		"popup.hint":      "↑/↓ hoặc j/k để di chuyển, Enter hoặc Space để bật/tắt đẩy lên Mattermost, l để chuyển sang English. Nhấn q hoặc Esc để đóng.",
 		"popup.toggling":  "Đang bật/tắt %s...",
 		"popup.close":     "Nhấn q hoặc Esc để đóng.",
+		"popup.failed":    "Không bật/tắt được %s: %v",
+		"popup.error":     "herdr-mm status gặp lỗi: %v",
+		"truncated":       "\n… (đã cắt bớt)",
+		"err.missing":     "thiếu %s trong %s",
+		"err.login":       "đăng nhập Mattermost thất bại, kiểm tra MM_URL và MM_BOT_TOKEN",
+		"err.dm":          "không mở được DM với @%s",
 	},
 	"en": {
 		"idle": "idle", "done": "done", "working": "working", "blocked": "blocked",
@@ -61,6 +67,12 @@ var catalog = map[string]map[string]string{
 		"popup.hint":      "↑/↓ or j/k to move, Enter or Space to toggle mirroring, l to switch to Tiếng Việt. Press q or Esc to close.",
 		"popup.toggling":  "Toggling %s...",
 		"popup.close":     "Press q or Esc to close.",
+		"popup.failed":    "toggle %s: %v",
+		"popup.error":     "herdr-mm status: %v",
+		"truncated":       "\n… (truncated)",
+		"err.missing":     "missing %s in %s",
+		"err.login":       "mattermost login failed, check MM_URL and MM_BOT_TOKEN",
+		"err.dm":          "open DM with @%s",
 	},
 }
 
