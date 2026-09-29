@@ -125,7 +125,7 @@ That is the plugin state directory herdr passes as `HERDR_PLUGIN_STATE_DIR`. The
 | Command | Run by | Does |
 | --- | --- | --- |
 | `start` | `[[startup]]` hook, and after each toggle | Launches `herdr-mm daemon` detached. |
-| `daemon` | `start` | Holds the Mattermost WebSocket and types your thread replies into the agent with `herdr agent prompt`. For `@capture` it reads the screen with `herdr pane read --source visible --format ansi` and uploads the PNG with Mattermost's file API, then closes the panel of `/status`, `/stats` or `/usage` with `herdr agent send-keys <pane> esc`. A lock file keeps it to one instance. |
+| `daemon` | `start` | Holds the Mattermost WebSocket and types your thread replies into the agent with `herdr agent prompt`. For `@capture` it reads the screen with `herdr pane read --source visible --format ansi` and uploads the PNG with Mattermost's file API, then closes the panel some slash commands leave open with `herdr agent send-keys <pane> esc`. A lock file keeps it to one instance. |
 | `toggle` | the pane action | Creates the pane's root post, or marks it, posts a stop notice and stops mirroring. |
 | `event` | `[[events]]` hooks for `pane.agent_status_changed`, `pane.moved` and `pane.closed` | Edits the root post and posts replies or dialogs for a mirrored pane, and a stop notice when it closes. A move to another workspace gives the pane a new id, so the thread is re-keyed to it. |
 | `stop` | the stop action | Stops the daemon and waits for it to exit. |
