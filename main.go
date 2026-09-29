@@ -563,8 +563,11 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		// ponytail: resuming a session /clear started considers all its turns; record the session with
 		// LastReply if old thread-prompted answers ever get reposted.
 		next := rs
-		if i := slices.IndexFunc(rs, func(r reply) bool { return r.uuid == p.LastReply }); i >= 0 {
-			next = rs[i+1:]
+		if i := slices.IndexFunc(rs, func(r reply) bool { return slices.Contains(r.uuids, p.LastReply) }); i >= 0 {
+			next = rs[i:]
+			if rs[i].uuid == p.LastReply {
+				next = rs[i+1:]
+			}
 		} else if p.LastReply != "" && !cleared {
 			next = rs[len(rs)-1:]
 		}
@@ -737,11 +740,11 @@ func lastReply(path string) (text, uuid string, prompts, turn []string, err erro
 	return r.text, r.uuid, r.prompts, turn, err
 }
 
-// reply is the newest assistant text message of a turn, with the uuid of its last entry and the prompts
-// typed in its turn.
+// reply is the newest assistant text message of a turn, with the uuid of its last entry, those of every
+// text entry in the turn and the prompts typed in it.
 type reply struct {
-	text, uuid string
-	prompts    []string
+	text, uuid     string
+	uuids, prompts []string
 }
 
 // replies returns the reply of every main-thread turn in a Claude transcript, oldest first, the prompts
@@ -759,12 +762,12 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 	}
 	defer f.Close()
 	var msgID, uuid string
-	var texts, prompts []string
+	var texts, uuids, prompts []string
 	endTurn := func() {
 		if uuid != "" {
-			rs = append(rs, reply{strings.Join(texts, "\n\n"), uuid, prompts})
+			rs = append(rs, reply{strings.Join(texts, "\n\n"), uuid, uuids, prompts})
 		}
-		msgID, uuid, texts, prompts = "", "", nil, nil
+		msgID, uuid, texts, uuids, prompts = "", "", nil, nil, nil
 	}
 	r := bufio.NewReader(f) // not a Scanner: tool results make lines longer than its buffer
 	for {
@@ -825,7 +828,7 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid, prompts = append(texts, t...), e.UUID, turn
+				texts, uuid, uuids, prompts = append(texts, t...), e.UUID, append(uuids, e.UUID), turn
 			}
 		}
 		if readErr == io.EOF {

@@ -466,7 +466,8 @@ func TestQueuedThreadRepliesAllPosted(t *testing.T) {
 }
 
 // TestQueuedThreadRepliesInNewTranscript posts every queued thread turn of a transcript that had no turns
-// yet, whether the pane was shared before its first prompt or /clear started a new one with no event.
+// yet, whether the pane was shared before its first prompt or /clear started a new one with no event, and
+// reposts only a turn that went on after a usage limit.
 func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 	e, send, idle := threadTurns(t)
 	send("first", 100)
@@ -484,6 +485,13 @@ func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 	e.appendTranscript(t, typed("t5", "third"), assistant("t6", "m3", "text", "Third answer.", false),
 		typed("t7", "fourth"), assistant("t8", "m4", "text", "Fourth answer.", false))
 	idle("Third answer.", "Fourth answer.")
+
+	send("fifth", 104)
+	e.appendTranscript(t, typed("t9", "fifth"), assistant("t10", "m5", "text", "You've hit your session limit · resets 12:20am", false))
+	idle("You've hit your session limit · resets 12:20am")
+	e.appendTranscript(t, `{"type":"user","isMeta":true,"origin":{"kind":"auto-continuation"},"uuid":"t11","message":{"role":"user","content":"Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work."}}`,
+		assistant("t12", "m6", "text", "Fifth answer.", false))
+	idle("Fifth answer.")
 }
 
 // threadTurns shares the pane over a transcript holding history and returns functions that send a thread
