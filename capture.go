@@ -43,7 +43,7 @@ var (
 
 // capture posts a screenshot of the pane mirrored in the thread rootID once the agent is blocked, or is
 // not working and the screen has settled. After a slash command it presses Esc to close the panel some
-// leave open, such as Claude's /stats, unless the agent is working or blocked on a dialog.
+// leave open, such as Claude's /stats, but only when herdr reports the agent idle or done.
 func (a *app) capture(rootID, cmd string) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -74,7 +74,7 @@ func (a *app) capture(rootID, cmd string) {
 	if !strings.HasPrefix(cmd, "/") {
 		return
 	}
-	if info, err := a.agent(id); err == nil && info.Status != "working" && info.Status != "blocked" {
+	if info, err := a.agent(id); err == nil && (info.Status == "idle" || info.Status == "done") {
 		if _, err := a.herdr("agent", "send-keys", id, "esc"); err != nil {
 			log.Printf("capture: esc: %v", err)
 		}

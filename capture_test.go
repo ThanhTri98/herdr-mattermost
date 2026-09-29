@@ -239,10 +239,12 @@ func TestCaptureEscClosesSlashPanel(t *testing.T) {
 	keys := filepath.Join(e.herdrDir, "keys.log")
 	for _, c := range []struct{ status, cmd, want string }{
 		{"idle", "/stats", "w1:p1|esc\n"},
+		{"done", "/context", "w1:p1|esc\n"},
 		{"idle", "", ""},
 		{"idle", "fix it", ""},
 		{"working", "/context", ""},
 		{"blocked", "/context", ""},
+		{"unknown", "/context", ""},
 	} {
 		os.Remove(keys)
 		e.setAgent(t, c.status)
