@@ -325,7 +325,8 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 // handlePost obeys a post from MM_USER. In the bot's DM a thread reply prompts that thread's pane and a
 // top-level "list" lists the mirrored panes. In a channel linked to a pane, a post that @mentions the bot,
 // top-level or in any thread, prompts that pane and is answered in its thread; anyone else who mentions
-// the bot there is told only MM_USER is obeyed. late marks a post sent while the WebSocket was down.
+// the bot there is told only MM_USER is obeyed. In both, the bot's mention followed by "help" gets the
+// command list instead. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
