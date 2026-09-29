@@ -11,7 +11,7 @@ Switch mirroring on for a pane and the bot opens a thread for it in your direct 
 - A thread reply starting with `@capture` also posts a screenshot of the pane into the thread. See [Screenshots](#screenshots).
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.
 
-Only the one Mattermost user named in `MM_USER` is obeyed: in the bot's DM, and in a channel linked to a pane when they @mention the bot. Everyone else, the bot itself, and bot or webhook posts are ignored, except that someone else who @mentions the bot in a linked channel is told who controls it.
+Only the one Mattermost user named in `MM_USER` is obeyed: in the bot's DM, and in a channel linked to a pane when they @mention the bot. Everyone else, the bot itself, and bot, webhook or system posts, such as a channel header change, are ignored, except that someone else who @mentions the bot in a linked channel is told who controls it.
 
 The bot talks to Mattermost over REST and an outbound WebSocket, so it works from behind NAT (for example WSL): no incoming or outgoing webhooks, and no slash commands. Reading replies from the transcript supports Claude Code agents only.
 

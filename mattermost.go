@@ -37,6 +37,7 @@ type post struct {
 	CreateAt  int64          `json:"create_at,omitempty"`
 	DeleteAt  int64          `json:"delete_at,omitempty"`
 	Message   string         `json:"message"`
+	Type      string         `json:"type,omitempty"`
 	Props     map[string]any `json:"props,omitempty"`
 	FileIDs   []string       `json:"file_ids,omitempty"`
 }
@@ -328,7 +329,7 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 func (a *app) handlePost(p post, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations.
-	if p.UserID == a.botID || fmt.Sprint(p.Props["from_bot"]) == "true" || fmt.Sprint(p.Props["from_webhook"]) == "true" {
+	if p.UserID == a.botID || p.Type != "" || fmt.Sprint(p.Props["from_bot"]) == "true" || fmt.Sprint(p.Props["from_webhook"]) == "true" {
 		return nil
 	}
 	if p.CreateAt <= a.lastPost || p.DeleteAt != 0 {

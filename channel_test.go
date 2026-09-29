@@ -73,6 +73,7 @@ func TestChannelControl(t *testing.T) {
 		{ID: "c7", ChannelID: "ch1", RootID: "c4", UserID: "bob-id", Message: "@herdr rm -rf /", CreateAt: 107},
 		{ID: "c8", ChannelID: "ch1", UserID: "alice-id", Message: "@herdr hook", Props: map[string]any{"from_webhook": "true"}, CreateAt: 108},
 		{ID: "c9", ChannelID: "ch1", UserID: "alice-id", Message: "ping @herdr.vo about it", CreateAt: 109},
+		{ID: "c10", ChannelID: "ch1", UserID: "alice-id", Type: "system_header_change", Message: "alice updated the channel header to: Ping @herdr to run my agent", CreateAt: 110},
 	} {
 		if err := e.a.handleEvent(posted(p)); err != nil {
 			t.Fatal(err)
