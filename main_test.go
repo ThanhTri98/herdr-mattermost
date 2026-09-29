@@ -657,7 +657,6 @@ func TestListRows(t *testing.T) {
 	got := listRows(agents, panes)
 	want := []row{
 		{ID: "w1:p1", Agent: "codex", Cwd: "/a", Status: "idle"},
-		{ID: "w1:p2", Agent: "claude", Cwd: "/c", Status: "idle", Mirrored: true, NoAgent: true},
 		{ID: "w1:p3", Agent: "claude", Cwd: "/b", Status: "working", Mirrored: true},
 	}
 	if !slices.Equal(got, want) {

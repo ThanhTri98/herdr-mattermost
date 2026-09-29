@@ -5,7 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
-//	herdr-mm status  popup pane: list agent and mirrored panes, toggle the selected one, close on q or Esc
+//	herdr-mm status  popup pane: list agent panes, toggle the selected one, close on q or Esc
 package main
 
 import (
@@ -212,10 +212,10 @@ func (a *app) daemonPid() int {
 	return pid
 }
 
-// row is a pane listed in the status popup: one herdr reports an agent in, or a mirrored one.
+// row is a pane herdr reports an agent in, listed in the status popup.
 type row struct {
 	ID, Agent, Cwd, Status string
-	Mirrored, NoAgent      bool
+	Mirrored               bool
 }
 
 // listedAgent is an entry of herdr agent list.
@@ -224,7 +224,7 @@ type listedAgent struct {
 	PaneID string `json:"pane_id"`
 }
 
-// rows lists the agent panes and the mirrored panes. It does not take state.lock, which a toggle or
+// rows lists the agent panes. It does not take state.lock, which a toggle or
 // event hook holds across Mattermost calls.
 func (a *app) rows() ([]row, error) {
 	panes, err := a.readPanes()
@@ -244,18 +244,12 @@ func (a *app) rows() ([]row, error) {
 	return listRows(r.Result.Agents, panes), nil
 }
 
-// listRows merges herdr's agents with the mirrored panes, so a mirrored pane whose agent is gone can
-// still be switched off.
+// listRows marks which of herdr's agents are mirrored.
 func listRows(agents []listedAgent, panes map[string]*pane) []row {
 	var rows []row
 	for _, ag := range agents {
 		_, on := panes[ag.PaneID]
 		rows = append(rows, row{ID: ag.PaneID, Agent: ag.Agent, Cwd: ag.Cwd, Status: ag.Status, Mirrored: on})
-	}
-	for id, p := range panes {
-		if !slices.ContainsFunc(agents, func(ag listedAgent) bool { return ag.PaneID == id }) {
-			rows = append(rows, row{ID: id, Agent: p.Agent, Cwd: p.Cwd, Status: p.Status, Mirrored: true, NoAgent: true})
-		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows
@@ -269,7 +263,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "No agent panes and no mirrored panes.")
+		fmt.Fprintln(w, "No agent panes.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -281,9 +275,6 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		}
 		if r.Mirrored {
 			on = "yes"
-		}
-		if r.NoAgent {
-			on = "yes (no agent)"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
 	}
