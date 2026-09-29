@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,8 @@ type fakeMM struct {
 	now       int64 // create_at of the newest post
 	failPatch bool  // answer post edits with 500
 	failLogin int   // answer this many logins with 503
+
+	files []string // "channel_id|name|content" of each upload
 }
 
 // add stores a post as if someone else sent it.
@@ -82,6 +85,15 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.ID, p.UserID, p.CreateAt = fmt.Sprintf("post%d", len(f.posts)+1), "bot", f.now
 		f.posts = append(f.posts, p)
 		json.NewEncoder(w).Encode(p)
+	case r.Method == "POST" && path == "/files":
+		file, h, err := r.FormFile("files")
+		if err != nil {
+			http.Error(w, `{"message":"no file"}`, http.StatusBadRequest)
+			return
+		}
+		b, _ := io.ReadAll(file)
+		f.files = append(f.files, r.FormValue("channel_id")+"|"+h.Filename+"|"+string(b))
+		fmt.Fprintf(w, `{"file_infos":[{"id":"file%d"}]}`, len(f.files))
 	case r.Method == "GET" && path == "/channels/dm/posts":
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		list := map[string]map[string]*post{"posts": {}}
@@ -124,6 +136,7 @@ d=$(dirname "$0")
 case "$1 $2" in
 "agent get") cat "$d/agent.json" ;;
 "agent read") cat "$d/screen.txt" ;;
+"pane read") [ "$4 $5 $6 $7" = "--source visible --format ansi" ] && cat "$d/screen.ansi" ;;
 "agent list") cat "$d/agents.json" 2>/dev/null || echo '{"result":{"agents":[]}}' ;;
 "pane list"|"tab list"|"workspace list") cat "$d/$1s.json" 2>/dev/null || echo '{"result":{}}' ;;
 "status server") [ -e "$d/stopped" ] && echo '{"running":false}' || echo '{"running":true}' ;;
