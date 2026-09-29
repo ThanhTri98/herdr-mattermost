@@ -367,7 +367,7 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		panes[id] = p
-		return a.sync(id, p) // posts the dialog if the agent is already blocked
+		return a.sync(id, p)
 	})
 }
 
@@ -439,15 +439,15 @@ func (a *app) sync(id string, p *pane) error {
 }
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
-// once each. A reply is posted only when its turn was prompted from the thread: one of the turn's
-// prompts in the transcript is a recent text the daemon typed. Turns typed in the terminal stay off Mattermost.
+// once each. Both are posted only when the turn in effect was prompted from the thread: one of the
+// turn's prompts in the transcript is a recent text the daemon typed. Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
-		text, uuid, prompts, err := lastReply(a.transcript(info))
+		text, uuid, turn, err := lastReply(a.transcript(info))
 		if err != nil {
 			return err
 		}
@@ -458,9 +458,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			// prompt, not the one that started the task, so a task started in the terminal that finishes
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
-			if slices.ContainsFunc(prompts, func(s string) bool {
-				return strings.TrimSpace(s) != "" && slices.ContainsFunc(p.Prompted, func(q string) bool { return sameText(s, q) })
-			}) {
+			if p.fromThread(turn) {
 				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
 					return err
 				}
@@ -468,6 +466,10 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			p.LastReply = uuid
 		}
 	case "blocked":
+		_, _, turn, err := lastReply(a.transcript(info))
+		if err != nil || !p.fromThread(turn) {
+			return err
+		}
 		screen, err := a.herdr("agent", "read", id, "--source", "detection")
 		if err != nil {
 			return err
@@ -581,6 +583,13 @@ func (a *app) transcript(info agentInfo) string {
 	return ""
 }
 
+// fromThread reports whether one of a turn's prompts is a recent thread reply typed into the pane.
+func (p *pane) fromThread(turn []string) bool {
+	return slices.ContainsFunc(turn, func(s string) bool {
+		return strings.TrimSpace(s) != "" && slices.ContainsFunc(p.Prompted, func(q string) bool { return sameText(s, q) })
+	})
+}
+
 // sameText compares prompts ignoring whitespace differences typing may introduce.
 func sameText(a, b string) bool {
 	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
@@ -600,9 +609,9 @@ func tag(s, name string) string {
 }
 
 // lastReply returns the text of the newest main-thread assistant message in a Claude transcript, the
-// uuid of its last entry and the prompts typed in its turn. Claude writes one entry per content block,
-// so text is gathered by message id.
-func lastReply(path string) (text, uuid string, prompts []string, err error) {
+// uuid of its last entry and the prompts typed in the turn in effect at the end of the transcript.
+// Claude writes one entry per content block, so text is gathered by message id.
+func lastReply(path string) (text, uuid string, turn []string, err error) {
 	if path == "" {
 		return "", "", nil, nil
 	}
@@ -612,7 +621,7 @@ func lastReply(path string) (text, uuid string, prompts []string, err error) {
 	}
 	defer f.Close()
 	var msgID string
-	var texts, turn []string
+	var texts []string
 	r := bufio.NewReader(f) // not a Scanner: tool results make lines longer than its buffer
 	for {
 		line, readErr := r.ReadBytes('\n')
@@ -666,11 +675,11 @@ func lastReply(path string) (text, uuid string, prompts []string, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid, prompts = append(texts, t...), e.UUID, turn
+				texts, uuid = append(texts, t...), e.UUID
 			}
 		}
 		if readErr == io.EOF {
-			return strings.Join(texts, "\n\n"), uuid, prompts, nil
+			return strings.Join(texts, "\n\n"), uuid, turn, nil
 		}
 		if readErr != nil {
 			return "", "", nil, readErr

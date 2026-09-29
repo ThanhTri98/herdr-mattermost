@@ -221,6 +221,15 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("a turn typed in the terminal must not be posted: %+v", posts)
 	}
 
+	screen := "❯ earlier conversation\n\n" + strings.Repeat("─", 40) + "\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n"
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(screen), 0o644)
+	e.appendTranscript(t, typed("t3", "clean the build"), assistant("t4", "mb", "tool_use", "", false))
+	e.setAgent(t, "blocked")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts = e.mm.snapshot(); len(posts) != 1 || !strings.Contains(posts[0].Message, "blocked") {
+		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
+	}
+
 	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "fix the\nbug", CreateAt: 100}))
 	e.setAgent(t, "working")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
@@ -245,8 +254,6 @@ func TestStatusToPostFlow(t *testing.T) {
 	}
 
 	e.setAgent(t, "blocked")
-	screen := "❯ earlier conversation\n\n" + strings.Repeat("─", 40) + "\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n"
-	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(screen), 0o644)
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
