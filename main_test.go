@@ -466,7 +466,7 @@ func TestQueuedThreadRepliesAllPosted(t *testing.T) {
 }
 
 // TestQueuedThreadRepliesInNewTranscript posts every queued thread turn of a transcript that had no turns
-// yet, whether the pane was shared before its first prompt or /clear started a new one.
+// yet, whether the pane was shared before its first prompt or /clear started a new one with no event.
 func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 	e, send, idle := threadTurns(t)
 	send("first", 100)
@@ -476,7 +476,9 @@ func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 	idle("First answer.", "Second answer.")
 
 	os.WriteFile(e.transcript, nil, 0o644)
-	idle()
+	e.appendTranscript(t, `{"type":"user","isMeta":true,"uuid":"c0","message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"}}`,
+		typed("c1", "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"),
+		`{"type":"system","subtype":"local_command","uuid":"c2","content":"<local-command-stdout></local-command-stdout>"}`)
 	send("third", 102)
 	send("fourth", 103)
 	e.appendTranscript(t, typed("t5", "third"), assistant("t6", "m3", "text", "Third answer.", false),
