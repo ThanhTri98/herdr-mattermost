@@ -27,7 +27,6 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
-	"time"
 	"unicode/utf8"
 )
 
@@ -72,9 +71,9 @@ func main() {
 type app struct {
 	mmURL, token, user                     string // from $HERDR_PLUGIN_CONFIG_DIR/.env
 	envPath, stateDir, herdrBin, claudeDir string
-	botID, userID, dmID                    string    // filled by connect
-	lastPost                               int64     // create_at of the last DM post the daemon handled
-	downSince                              time.Time // when the WebSocket dropped; zero before the first connect
+	botID, userID, dmID                    string // filled by connect
+	lastPost                               int64  // create_at of the last DM post the daemon handled
+	connected                              bool   // the daemon's WebSocket has connected before
 }
 
 func load() (*app, error) {
@@ -534,9 +533,7 @@ func (a *app) toggle(id string) error {
 			if err := a.patchPost(p.RootID, rootMessage(id, p)); err != nil {
 				return err
 			}
-			names, _ := a.names() // a missing name only leaves it out of the notice
-			_, err := a.createPost(p.ChannelID, "", a.stoppedMessage(id, names[id], p))
-			return err
+			return a.postStopped(id, p)
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -589,7 +586,10 @@ func (a *app) event(name string, raw []byte) error {
 		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
-			return a.patchPost(p.RootID, rootMessage(id, p))
+			if err := a.patchPost(p.RootID, rootMessage(id, p)); err != nil {
+				return err
+			}
+			return a.postStopped(id, p)
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
@@ -685,14 +685,20 @@ func rootMessage(id string, p *pane) string {
 	return head + "\n_Reply in this thread to prompt the agent._"
 }
 
-// stoppedMessage is the top-level post that tells the user mirroring of a pane was switched off; the
-// root post is only edited, which notifies nobody.
-func (a *app) stoppedMessage(id, name string, p *pane) string {
-	if name != "" {
-		name = "**" + name + "** · "
+// postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
+// the root post is only edited, which notifies nobody.
+func (a *app) postStopped(id string, p *pane) error {
+	what, name := "Mirroring stopped", ""
+	if p.Status == "closed" {
+		what = "Pane closed, mirroring stopped"
 	}
-	return fmt.Sprintf("%s Mirroring stopped for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
-		emoji["off"], name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
+	if names, _ := a.names(); names[id] != "" { // a missing name only leaves it out of the notice
+		name = "**" + names[id] + "** · "
+	}
+	msg := fmt.Sprintf("%s %s for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
+		emoji[p.Status], what, name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
+	_, err := a.createPost(p.ChannelID, "", msg)
+	return err
 }
 
 func baseName(path string) string {

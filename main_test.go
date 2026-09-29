@@ -337,8 +337,13 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.event(t, "pane.closed", "w1:p1")
-	if posts := e.mm.snapshot(); !strings.Contains(posts[0].Message, "Pane closed") {
+	posts := e.mm.snapshot()
+	if !strings.Contains(posts[0].Message, "Pane closed") {
 		t.Fatalf("root = %q", posts[0].Message)
+	}
+	want := "⚫ Pane closed, mirroring stopped for pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
+		t.Fatalf("close notice = %+v, want one top-level %q", posts, want)
 	}
 	e.a.withState(func(panes map[string]*pane) error {
 		if len(panes) != 0 {
@@ -542,8 +547,8 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "bob-id", Message: "not alice"})
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "", DeleteAt: 9})
 	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 2"})
-	if n, err := e.a.catchUp(); err != nil || n != 2 {
-		t.Fatalf("catchUp = %d, %v; want 2 handled", n, err)
+	if err := e.a.catchUp(); err != nil {
+		t.Fatal(err)
 	}
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\n" {
 		t.Fatalf("prompts = %q", got)
@@ -566,8 +571,8 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 
 	missed2 := e.mm.snapshot()[4]
 	e.a.handleEvent(posted(missed2)) // the WebSocket delivering it too must not prompt twice
-	if n, err := e.a.catchUp(); err != nil || n != 0 {
-		t.Fatalf("catchUp = %d, %v; want nothing left", n, err)
+	if err := e.a.catchUp(); err != nil {
+		t.Fatal(err)
 	}
 	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "live", CreateAt: 100}))
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\nw1:p1|live\n" {
@@ -579,11 +584,10 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 }
 
 func TestConnectedMessage(t *testing.T) {
-	now := time.Unix(1000, 0)
-	if got := connectedMessage(time.Time{}, now, 0); got != "🔌 Connected: the herdr-mm daemon started (herdr start or daemon restart). Caught up 0 late message(s) sent while disconnected." {
+	if got := connectedMessage(false); got != "🔌 Connected: the herdr-mm daemon started." {
 		t.Fatalf("start = %q", got)
 	}
-	if got := connectedMessage(now.Add(-65*time.Second), now, 2); got != "🔌 Reconnected after the connection dropped; down for 1m5s. Caught up 2 late message(s) sent while disconnected." {
+	if got := connectedMessage(true); got != "🔌 Reconnected after the connection dropped." {
 		t.Fatalf("reconnect = %q", got)
 	}
 }
