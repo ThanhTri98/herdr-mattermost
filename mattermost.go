@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +37,7 @@ type post struct {
 	DeleteAt  int64          `json:"delete_at,omitempty"`
 	Message   string         `json:"message"`
 	Props     map[string]any `json:"props,omitempty"`
+	FileIDs   []string       `json:"file_ids,omitempty"`
 }
 
 // apiError is a Mattermost REST call answered with an error status.
@@ -60,8 +62,43 @@ func (a *app) api(method, path string, in, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
 	req.Header.Set("Content-Type", "application/json")
+	return a.send(req, out)
+}
+
+// uploadFile uploads a file into a channel and returns its id, for a post's file_ids.
+func (a *app) uploadFile(channelID, name string, data []byte) (string, error) {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("channel_id", channelID)
+	fw, err := w.CreateFormFile("files", name)
+	if err == nil {
+		_, err = fw.Write(data)
+	}
+	if err = errors.Join(err, w.Close()); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, a.mmURL+"/api/v4/files", &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	var r struct {
+		FileInfos []struct{ ID string } `json:"file_infos"`
+	}
+	if err := a.send(req, &r); err != nil {
+		return "", err
+	}
+	if len(r.FileInfos) != 1 {
+		return "", fmt.Errorf("POST /files: %d file infos returned", len(r.FileInfos))
+	}
+	return r.FileInfos[0].ID, nil
+}
+
+// send makes a REST call as the bot and decodes the response into out (if not nil).
+func (a *app) send(req *http.Request, out any) error {
+	method, path := req.Method, strings.TrimPrefix(req.URL.RequestURI(), "/api/v4")
+	req.Header.Set("Authorization", "Bearer "+a.token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
@@ -239,6 +276,15 @@ func (a *app) handlePost(p post, late bool) error {
 		return nil
 	}
 
+	cmd, capture := captureCmd(p.Message)
+	if capture && cmd == "" {
+		go a.capture(p.RootID, false)
+		return nil
+	}
+	if capture { // typed like any reply, then the screen is posted once it settles
+		p.Message = cmd
+		defer func() { go a.capture(p.RootID, true) }()
+	}
 	var paneID string
 	var prev recent
 	a.withState(func(panes map[string]*pane) error {

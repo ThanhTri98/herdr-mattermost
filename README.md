@@ -8,6 +8,7 @@ Switch mirroring on for a pane and the bot opens a thread for it in your direct 
 - When the agent finishes a turn you started from the thread, its last reply is posted into the thread. If you send another reply while the agent is still answering, so it moves straight on without going idle, the reply to each of those turns is posted, oldest first. Turns you start by typing in the terminal stay off Mattermost: the plugin posts a reply only when one of the last five thread replies it typed in is one of the turn's prompts in the transcript, including a reply queued while the agent was still working. A turn a background task resumes after such a turn is posted too. A background task is matched to the latest prompt, not the one that started it, so a task started in the terminal that finishes after a thread reply can be posted by mistake, and one started from the thread that finishes after a terminal prompt can be kept off Mattermost.
 - When the agent stops on an approval or question dialog in a turn you started from the thread, the dialog is posted into the thread and you are @mentioned; a dialog in a turn you typed in the terminal is not posted. Answer the dialog on the machine; approving from Mattermost is not supported.
 - A reply you write in the thread is typed into that agent, like `herdr agent prompt`, and the bot acknowledges it in the thread right away. A reply sent while the bot was disconnected is typed in when it reconnects, with a note in the thread saying it was delivered late.
+- A thread reply starting with `@capture` also posts a screenshot of the pane into the thread. See [Screenshots](#screenshots).
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.
 
 Only the one Mattermost user named in `MM_USER` is obeyed, and only in the bot's DM. Everyone else, the bot itself, and bot or webhook posts are ignored.
@@ -83,6 +84,18 @@ Focus an agent pane and press the key, or run the **Toggle Mattermost mirroring*
 
 Run the **Show Mattermost status** action, or press its key, to open a popup that shows whether the daemon is running and lists every pane herdr reports an agent in, with its name, pane id, agent, directory, status and whether it is mirrored. Move with the up and down arrows or `j` and `k`, and press `Enter` or `Space` to toggle mirroring of the selected pane, exactly as the toggle action does on that pane. The list refreshes after every key, and a failed toggle shows its error in the popup. Press `q` or `Esc` to close it. A pane's name is the one you gave it with herdr's pane rename, otherwise its workspace's label, followed by the tab's label when the workspace has more than one tab.
 
+### Screenshots
+
+Some output is only drawn in the terminal and never reaches the transcript, such as Claude's `/context`. To see it, reply in the pane's thread with `@capture` followed by what to type:
+
+```
+@capture /context
+```
+
+The rest of the message is typed into the agent exactly like a normal reply, with the same acknowledgement, and a reply the agent writes for it is still posted. Then the bot waits until the agent is no longer working and the screen has not changed for 2 seconds, and posts a PNG of the pane's visible screen into the thread. If the screen is still changing after 60 seconds, it posts the screen as it is and says so. The screenshot is taken even when typing fails, for example while a dialog is open, so it shows why. `@capture` on its own posts the current screen straight away without typing anything.
+
+The image is drawn by the plugin, with colours, bold and wide characters, from the first monospace font it finds: DejaVu Sans Mono, Ubuntu Mono or Liberation Mono on Linux, Menlo or Monaco on macOS. Characters that font lacks are taken from DejaVu Sans, Noto Sans Symbols 2 or Noto Sans CJK when installed (Apple Symbols or Arial Unicode on macOS), and show as boxes otherwise; emoji are drawn in one colour. Without any monospace font, the screen is posted as text in a code block instead, with a note saying why.
+
 The daemon that listens for your replies is started by herdr at startup and by every toggle, so there is nothing else to run. Only one daemon runs at a time. If Mattermost cannot be reached when it starts, it keeps retrying. Each time it connects, it posts a message in the DM saying whether the daemon just started or reconnected after the connection dropped. A herdr restart posts only when it has to start a new daemon; a daemon that is still running keeps its connection and posts nothing.
 
 Before it acts on a message, the daemon checks that herdr is running and the plugin is still enabled. If not, it answers that nothing was typed into the agent and exits.
@@ -110,7 +123,7 @@ That is the plugin state directory herdr passes as `HERDR_PLUGIN_STATE_DIR`. The
 | Command | Run by | Does |
 | --- | --- | --- |
 | `start` | `[[startup]]` hook, and after each toggle | Launches `herdr-mm daemon` detached. |
-| `daemon` | `start` | Holds the Mattermost WebSocket and types your thread replies into the agent with `herdr agent prompt`. A lock file keeps it to one instance. |
+| `daemon` | `start` | Holds the Mattermost WebSocket and types your thread replies into the agent with `herdr agent prompt`. For `@capture` it reads the screen with `herdr pane read --source visible --format ansi` and uploads the PNG with Mattermost's file API. A lock file keeps it to one instance. |
 | `toggle` | the pane action | Creates the pane's root post, or marks it, posts a stop notice and stops mirroring. |
 | `event` | `[[events]]` hooks for `pane.agent_status_changed`, `pane.moved` and `pane.closed` | Edits the root post and posts replies or dialogs for a mirrored pane, and a stop notice when it closes. A move to another workspace gives the pane a new id, so the thread is re-keyed to it. |
 | `stop` | the stop action | Stops the daemon and waits for it to exit. |
@@ -128,6 +141,7 @@ Not built yet:
 
 - Approving or answering dialogs from Mattermost (with `herdr agent send-keys`).
 - Reactions, and file attachments for output longer than one post.
+- Screenshots of the scrollback, or triggered by anything but a thread reply.
 - Agents other than Claude Code.
 - Private channels, slash commands and webhooks.
 - More than one machine, or more than one herdr session at a time: pane ids are not unique across sessions, and the single daemon prompts through the session that started it.
