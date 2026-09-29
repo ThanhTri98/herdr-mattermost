@@ -340,7 +340,7 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 // order, of those that share a name.
 func numbered(names map[string]string) map[string]string {
 	seen, out := map[string]int{}, map[string]string{}
-	for _, id := range slices.Sorted(maps.Keys(names)) {
+	for _, id := range slices.SortedFunc(maps.Keys(names), paneOrder) {
 		n := names[id]
 		if seen[n]++; n != "" && seen[n] > 1 {
 			n += " #" + strconv.Itoa(seen[n])
@@ -348,6 +348,17 @@ func numbered(names map[string]string) map[string]string {
 		out[id] = n
 	}
 	return out
+}
+
+// paneOrder orders pane ids like w12:p3 by workspace number, then pane number.
+func paneOrder(x, y string) int {
+	num := func(id string) (w, p int) {
+		fmt.Sscanf(id, "w%d:p%d", &w, &p)
+		return w, p
+	}
+	xw, xp := num(x)
+	yw, yp := num(y)
+	return cmp.Or(cmp.Compare(xw, yw), cmp.Compare(xp, yp), cmp.Compare(x, y))
 }
 
 // listRows marks which of herdr's agents are mirrored.
