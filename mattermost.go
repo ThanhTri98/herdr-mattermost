@@ -126,13 +126,13 @@ func (a *app) connect() error {
 		LastPostAt int64 `json:"last_post_at"`
 	}
 	if err := a.api(http.MethodGet, "/users/me", nil, &me); err != nil {
-		return fmt.Errorf("mattermost login failed, check MM_URL and MM_BOT_TOKEN: %w", err)
+		return fmt.Errorf(a.t("err.login")+": %w", err)
 	}
 	if err := a.api(http.MethodGet, "/users/username/"+url.PathEscape(a.user), nil, &user); err != nil {
 		return fmt.Errorf("MM_USER %q: %w", a.user, err)
 	}
 	if err := a.api(http.MethodPost, "/channels/direct", []string{me.ID, user.ID}, &dm); err != nil {
-		return fmt.Errorf("open DM with @%s: %w", a.user, err)
+		return fmt.Errorf(a.t("err.dm")+": %w", a.user, err)
 	}
 	a.botID, a.userID, a.dmID, a.lastPost = me.ID, user.ID, dm.ID, dm.LastPostAt
 	return nil
@@ -153,12 +153,12 @@ func (a *app) connectRetry() error {
 
 func (a *app) createPost(channelID, rootID, message string) (string, error) {
 	var p post
-	err := a.api(http.MethodPost, "/posts", post{ChannelID: channelID, RootID: rootID, Message: truncate(message, maxPost)}, &p)
+	err := a.api(http.MethodPost, "/posts", post{ChannelID: channelID, RootID: rootID, Message: a.truncate(message, maxPost)}, &p)
 	return p.ID, err
 }
 
 func (a *app) patchPost(id, message string) error {
-	return a.api(http.MethodPut, "/posts/"+id+"/patch", map[string]string{"message": truncate(message, maxPost)}, nil)
+	return a.api(http.MethodPut, "/posts/"+id+"/patch", map[string]string{"message": a.truncate(message, maxPost)}, nil)
 }
 
 // listen keeps a WebSocket open to Mattermost to hear DM messages. Reconnects until the plugin is off.
@@ -189,7 +189,7 @@ func (a *app) listenOnce() error {
 		return err
 	}
 	// ponytail: one post per connect, so a flapping network posts on every reconnect; rate limit if that bites.
-	a.say("", connectedMessage(a.connected))
+	a.say("", a.connectedMessage(a.connected))
 	a.connected = true
 
 	// Mattermost pings about every 60s; 2 minutes of silence means the connection is dead.
@@ -228,11 +228,11 @@ func (a *app) catchUp() error {
 
 // connectedMessage announces a WebSocket connection: the daemon's first, or a reconnect after the
 // connection dropped.
-func connectedMessage(reconnect bool) string {
+func (a *app) connectedMessage(reconnect bool) string {
 	if reconnect {
-		return "🔌 Reconnected after the connection dropped."
+		return a.t("reconnected")
 	}
-	return "🔌 Connected: the herdr-mm daemon started."
+	return a.t("connected")
 }
 
 func (a *app) handleEvent(raw []byte) error {
@@ -268,7 +268,7 @@ func (a *app) handlePost(p post, late bool) error {
 		log.Printf("last_post: %v", err)
 	}
 	if !a.pluginOn() {
-		a.say(p.RootID, "⚪ herdr is not running or the Mattermost plugin is disabled, so this was not typed into any agent and the bot has stopped listening. Enable the plugin, then toggle a pane or restart herdr to bring it back.")
+		a.say(p.RootID, a.t("plugin.off"))
 		return errPluginOff
 	}
 	if p.RootID == "" {
@@ -307,15 +307,15 @@ func (a *app) handlePost(p post, late bool) error {
 			}
 			return nil
 		})
-		msg := "❌ Could not prompt the agent: " + err.Error()
+		msg := a.t("prompt.failed") + err.Error()
 		if he := (*herdrError)(nil); errors.As(err, &he) && he.Code == "agent_blocked" {
-			msg = "✋ The agent is waiting on a dialog. Approve or answer it on the machine, then reply again."
+			msg = a.t("prompt.blocked")
 		}
 		a.say(p.RootID, msg)
 	} else if late {
-		a.say(p.RootID, "📬 Delivered late: the bot was not connected when you sent this, so it was typed into the agent just now.")
+		a.say(p.RootID, a.t("prompt.late"))
 	} else {
-		a.say(p.RootID, "📥 Received - the agent is working on it.")
+		a.say(p.RootID, a.t("prompt.received"))
 	}
 	return nil
 }
@@ -323,18 +323,19 @@ func (a *app) handlePost(p post, late bool) error {
 // topLevel answers a DM message outside any thread.
 func (a *app) topLevel(msg string) string {
 	if !strings.EqualFold(strings.TrimSpace(msg), "list") {
-		return "Reply in a pane's thread to prompt its agent, or send `list` to see the mirrored panes."
+		return a.t("help")
 	}
 	var lines []string
 	a.withState(func(panes map[string]*pane) error {
+		labels, _, _, _ := a.labels(panes)
 		for id, p := range panes {
-			lines = append(lines, fmt.Sprintf("- %s **%s** · %s · `%s` · pane `%s` · [thread](%s/_redirect/pl/%s)",
-				emoji[p.Status], p.Status, p.Agent, baseName(p.Cwd), id, a.mmURL, p.RootID))
+			lines = append(lines, fmt.Sprintf("- %s **%s** · %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
+				emoji[p.Status], a.t(p.Status), bold(cmp.Or(labels[id], p.Name)), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID))
 		}
 		return nil
 	})
 	if len(lines) == 0 {
-		return "No panes are mirrored. Run the Mattermost toggle action on a herdr pane to mirror it."
+		return a.t("list.none")
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")

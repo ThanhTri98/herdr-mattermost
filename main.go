@@ -11,12 +11,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +61,8 @@ func main() {
 		}
 	}
 	if cmd == "status" { // load failed; show why until closed
-		fmt.Printf("herdr-mm status: %v\n\nPress q or Esc to close.", err)
+		texts := catalog[lang(os.Getenv("HERDR_PLUGIN_STATE_DIR"))]
+		fmt.Printf(texts["popup.error"]+"\n\n%s", err, texts["popup.close"])
 		waitQuit()
 		return
 	}
@@ -122,7 +125,7 @@ func (a *app) requireMM() error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("missing %s in %s", strings.Join(missing, ", "), a.envPath)
+		return fmt.Errorf(a.t("err.missing"), strings.Join(missing, ", "), a.envPath)
 	}
 	return nil
 }
@@ -232,24 +235,18 @@ func (a *app) rows() ([]row, error) {
 	if err != nil {
 		return nil, err
 	}
-	var r struct {
-		Result struct{ Agents []listedAgent }
-	}
-	out, err := a.herdr("agent", "list")
-	if err == nil {
-		err = json.Unmarshal(out, &r)
-	}
+	labels, hidden, agents, err := a.labels(panes)
 	if err != nil {
 		return nil, err
 	}
-	rows := listRows(r.Result.Agents, panes)
-	names, err := a.names()
-	if err != nil {
-		return nil, err
+	var rows []row
+	for _, r := range listRows(agents, panes) {
+		if !hidden[r.ID] {
+			r.Name = labels[r.ID]
+			rows = append(rows, r)
+		}
 	}
-	for i := range rows {
-		rows[i].Name = names[rows[i].ID]
-	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return rows, nil
 }
 
@@ -272,30 +269,49 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// names maps each pane id to the name herdr shows for it.
-func (a *app) names() (map[string]string, error) {
+// labels names every agent pane herdr reports and every mirrored pane, numbered so a pane has the same
+// label in the popup and in every post; a mirrored pane herdr no longer lists keeps its last label. It
+// also returns herdr's agents and marks the panes to leave out of the popup.
+func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]bool, []listedAgent, error) {
 	var r struct {
 		Result struct {
+			Agents     []listedAgent
 			Panes      []herdrPane
 			Tabs       []herdrTab
 			Workspaces []herdrWorkspace
 		}
 	}
-	for _, kind := range []string{"pane", "tab", "workspace"} {
+	for _, kind := range []string{"agent", "pane", "tab", "workspace"} {
 		out, err := a.herdr(kind, "list")
 		if err == nil {
 			err = json.Unmarshal(out, &r)
 		}
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 	}
-	return paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces), nil
+	names, hidden := paneNames(r.Result.Panes, r.Result.Tabs, r.Result.Workspaces)
+	set := map[string]string{}
+	for _, ag := range r.Result.Agents {
+		set[ag.PaneID] = names[ag.PaneID]
+	}
+	for id, p := range mirrored {
+		set[id] = cmp.Or(names[id], p.Name)
+	}
+	return numbered(set), hidden, r.Result.Agents, nil
+}
+
+// label sets p.Name to the pane's label; a failed lookup keeps the last one.
+func (a *app) label(id string, p *pane, mirrored map[string]*pane) {
+	if labels, _, _, err := a.labels(mirrored); err == nil && labels[id] != "" {
+		p.Name = labels[id]
+	}
 }
 
 // paneNames names a pane by its own label when renamed, otherwise by its workspace's label, followed
-// by the tab's label when the workspace has more than one tab.
-func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) map[string]string {
+// by the tab's label when the workspace has more than one tab. It marks hidden the panes of the
+// workspaces firstmate opens for its workers, whose labels start with "└ ".
+func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) (map[string]string, map[string]bool) {
 	tabLabel := map[string]string{}
 	for _, t := range tabs {
 		tabLabel[t.TabID] = t.Label
@@ -304,9 +320,10 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 	for _, w := range workspaces {
 		ws[w.WorkspaceID] = w
 	}
-	names := map[string]string{}
+	names, hidden := map[string]string{}, map[string]bool{}
 	for _, p := range panes {
 		w := ws[p.WorkspaceID]
+		hidden[p.PaneID] = strings.HasPrefix(w.Label, "└ ")
 		switch {
 		case p.Label != "":
 			names[p.PaneID] = p.Label
@@ -316,7 +333,33 @@ func paneNames(panes []herdrPane, tabs []herdrTab, workspaces []herdrWorkspace) 
 			names[p.PaneID] = w.Label
 		}
 	}
-	return names
+	return names, hidden
+}
+
+// numbered maps pane ids to their names, with " #2", " #3" added to the second and later, in pane id
+// order, of those that share a name.
+func numbered(names map[string]string) map[string]string {
+	seen, out := map[string]int{}, map[string]string{}
+	for _, id := range slices.SortedFunc(maps.Keys(names), paneOrder) {
+		n := names[id]
+		if seen[n]++; n != "" && seen[n] > 1 {
+			n += " #" + strconv.Itoa(seen[n])
+		}
+		out[id] = n
+	}
+	return out
+}
+
+// paneOrder orders pane ids like wV:p3 or w13:p2 by workspace, then pane. herdr counts each part up
+// like a number with digits 1-9, then A-Z, then 0, so a shorter part comes first and 0 ranks after Z.
+func paneOrder(x, y string) int {
+	xw, xp, _ := strings.Cut(x, ":")
+	yw, yp, _ := strings.Cut(y, ":")
+	count := func(a, b string) int {
+		a, b = strings.ReplaceAll(a, "0", "~"), strings.ReplaceAll(b, "0", "~")
+		return cmp.Or(cmp.Compare(len(a), len(b)), cmp.Compare(a, b))
+	}
+	return cmp.Or(count(xw, yw), count(xp, yp))
 }
 
 // listRows marks which of herdr's agents are mirrored.
@@ -333,25 +376,25 @@ func listRows(agents []listedAgent, panes map[string]*pane) []row {
 // status prints whether the daemon runs and the rows, with a cursor on rows[sel].
 func (a *app) status(w io.Writer, rows []row, sel int) error {
 	if pid := a.daemonPid(); pid != 0 {
-		fmt.Fprintf(w, "Mattermost daemon: running (pid %d)\n\n", pid)
+		fmt.Fprintf(w, a.t("popup.running")+"\n\n", pid)
 	} else {
-		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
+		fmt.Fprint(w, a.t("popup.stopped")+"\n\n")
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "No agent panes.")
+		fmt.Fprintln(w, a.t("popup.none"))
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, " \tNAME\tPANE\tAGENT\tDIRECTORY\tSTATUS\tMIRRORED")
+	fmt.Fprintln(tw, a.t("popup.header"))
 	for i, r := range rows {
 		cursor, on := " ", ""
 		if i == sel {
 			cursor = ">"
 		}
 		if r.Mirrored {
-			on = "yes"
+			on = a.t("popup.yes")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.ID, r.Agent, r.Cwd, emoji[r.Status], r.Status, on)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on)
 	}
 	return tw.Flush()
 }
@@ -370,12 +413,12 @@ func (a *app) popup() {
 			err = a.status(os.Stdout, rows, sel)
 		}
 		if err != nil {
-			fmt.Printf("herdr-mm status: %v\n", err)
+			fmt.Printf(a.t("popup.error")+"\n", err)
 		}
 		if msg != "" {
 			fmt.Printf("\n%s\n", msg)
 		}
-		fmt.Print("\n↑/↓ or j/k to move, Enter or Space to toggle mirroring. Press q or Esc to close.")
+		fmt.Print("\n" + a.t("popup.hint"))
 		n, err := os.Stdin.Read(b)
 		k := string(b[:n])
 		if err != nil || k == "\x1b" {
@@ -390,13 +433,17 @@ func (a *app) popup() {
 			switch key {
 			case "q":
 				return
+			case "l":
+				if err := a.switchLang(); err != nil {
+					msg = err.Error()
+				}
 			case "\x1b[A", "k":
 				sel = max(sel-1, 0)
 			case "\x1b[B", "j":
 				sel = max(min(sel+1, len(rows)-1), 0)
 			case "\r", "\n", " ":
 				if sel < len(rows) {
-					msg = a.popupToggle(rows[sel].ID)
+					msg = a.popupToggle(rows[sel])
 				}
 			}
 		}
@@ -404,14 +451,14 @@ func (a *app) popup() {
 }
 
 // popupToggle toggles a pane as the toggle action does and returns the error to show, if any.
-func (a *app) popupToggle(id string) string {
-	fmt.Printf("\n\nToggling %s...", id)
-	err := a.toggle(id)
+func (a *app) popupToggle(r row) string {
+	fmt.Printf("\n\n"+a.t("popup.toggling"), r.Name)
+	err := a.toggle(r.ID)
 	if err == nil {
 		err = a.start()
 	}
 	if err != nil {
-		return fmt.Sprintf("toggle %s: %v", id, err)
+		return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 	}
 	return ""
 }
@@ -460,7 +507,7 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
-	Name       string `json:"name,omitempty"`        // herdr's name for the pane, kept by sync for the stop notice
+	Name       string `json:"name,omitempty"`        // the pane's label, kept by sync for the stop notice
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
@@ -529,9 +576,10 @@ func (a *app) toggle(id string) error {
 	}
 	return a.withState(func(panes map[string]*pane) error {
 		if p := panes[id]; p != nil {
+			a.label(id, p, panes)
 			delete(panes, id)
 			p.Status = "off"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
+			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -541,12 +589,13 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
+		a.label(id, p, panes)
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
-		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(id, p)); err != nil {
+		if p.RootID, err = a.createPost(a.dmID, "", a.rootMessage(p)); err != nil {
 			return err
 		}
 		panes[id] = p
-		return a.sync(id, p)
+		return a.sync(id, panes)
 	})
 }
 
@@ -582,22 +631,23 @@ func (a *app) event(name string, raw []byte) error {
 		}
 		switch name {
 		case "pane_closed":
+			a.label(id, p, panes)
 			delete(panes, id)
 			p.Status = "closed"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
+			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
-			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.sync(id, p))
 		}
-		return a.sync(id, p)
+		return a.sync(id, panes)
 	})
 }
 
 // sync brings a mirrored pane's thread up to date with the agent's live state. It asks herdr for the
 // state instead of trusting the event, and dedupes what it posts, so hooks that run late or out of
 // order neither lose nor repeat a reply.
-func (a *app) sync(id string, p *pane) error {
+func (a *app) sync(id string, panes map[string]*pane) error {
+	p := panes[id]
 	info, err := a.agent(id)
 	if he := (*herdrError)(nil); errors.As(err, &he) && he.Code == "agent_not_found" {
 		info, err = agentInfo{Status: "unknown"}, nil // the agent exited; the pane may get a new one
@@ -605,17 +655,15 @@ func (a *app) sync(id string, p *pane) error {
 	if err != nil {
 		return err
 	}
-	prev := p.Status
+	prev, prevName := p.Status, p.Name
 	p.Status = info.Status
 	if info.Agent != "" {
 		p.Agent, p.Cwd = info.Agent, info.Cwd
 	}
-	if names, _ := a.names(); names[id] != "" { // a failed lookup keeps the last name
-		p.Name = names[id]
-	}
+	a.label(id, p, panes)
 	var patchErr error
-	if p.Status != prev {
-		patchErr = a.patchPost(p.RootID, rootMessage(id, p))
+	if p.Status != prev || p.Name != prevName {
+		patchErr = a.patchPost(p.RootID, a.rootMessage(p))
 	}
 	return errors.Join(patchErr, a.postNews(id, p, info))
 }
@@ -679,7 +727,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			return err
 		}
 		if d := dialog(string(screen)); d != p.LastDialog {
-			msg := fmt.Sprintf("@%s ✋ **%s** is waiting on a dialog. Answer it on the machine:\n```\n%s\n```", a.user, p.Agent, truncate(d, maxPost-500))
+			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, a.truncate(d, maxPost-500))
 			if _, err := a.createPost(p.ChannelID, p.RootID, msg); err != nil {
 				return err
 			}
@@ -693,31 +741,36 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 
 var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
 
-func rootMessage(id string, p *pane) string {
-	head := fmt.Sprintf("%s **%s** · %s · `%s` · pane `%s`", emoji[p.Status], p.Status, p.Agent, baseName(p.Cwd), id)
+func (a *app) rootMessage(p *pane) string {
+	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], a.t(p.Status), bold(p.Name), p.Agent, baseName(p.Cwd))
 	switch p.Status {
 	case "off":
-		return head + "\n_Mirroring stopped._"
+		return head + "\n" + a.t("root.off")
 	case "closed":
-		return head + "\n_Pane closed, mirroring stopped._"
+		return head + "\n" + a.t("root.closed")
 	}
-	return head + "\n_Reply in this thread to prompt the agent._"
+	return head + "\n" + a.t("root.reply")
 }
 
 // postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
 // the root post is only edited, which notifies nobody.
-func (a *app) postStopped(id string, p *pane) error {
-	what, name := "Mirroring stopped", ""
+func (a *app) postStopped(p *pane) error {
+	what := a.t("notice.off")
 	if p.Status == "closed" {
-		what = "Pane closed, mirroring stopped"
+		what = a.t("notice.closed")
 	}
-	if p.Name != "" {
-		name = "**" + p.Name + "** · "
-	}
-	msg := fmt.Sprintf("%s %s for %spane `%s` · %s · `%s` · [thread](%s/_redirect/pl/%s)",
-		emoji[p.Status], what, name, id, p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
+	msg := fmt.Sprintf("%s %s %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
+		emoji[p.Status], what, bold(p.Name), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
 	_, err := a.createPost(p.ChannelID, "", msg)
 	return err
+}
+
+// bold formats a pane name to lead a " · " list, or returns "" for a pane with no name yet.
+func bold(name string) string {
+	if name == "" {
+		return ""
+	}
+	return "**" + name + "** · "
 }
 
 func baseName(path string) string {
@@ -729,8 +782,8 @@ func baseName(path string) string {
 
 const maxPost = 16383 // Mattermost's post length limit, in characters
 
-func truncate(s string, max int) string {
-	const note = "\n… (truncated)"
+func (a *app) truncate(s string, max int) string {
+	note := a.t("truncated")
 	if utf8.RuneCountInString(s) <= max {
 		return s
 	}

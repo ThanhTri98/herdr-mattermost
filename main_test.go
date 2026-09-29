@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -168,6 +169,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	os.WriteFile(filepath.Join(herdrDir, "herdr"), []byte(fakeHerdr), 0o755)
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o755)
+	os.WriteFile(filepath.Join(state, "lang"), []byte("en\n"), 0o600) // most tests check the English texts
 	claude := filepath.Join(dir, "claude")
 	// Not the pane's cwd: Claude may have been started in another directory.
 	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
@@ -229,10 +231,13 @@ func TestStatusToPostFlow(t *testing.T) {
 	if len(posts) != 1 || posts[0].ChannelID != "dm" || posts[0].RootID != "" {
 		t.Fatalf("want one root post in the DM, got %+v", posts)
 	}
-	for _, want := range []string{"idle", "claude", "my_proj.x", "w1:p1"} {
+	for _, want := range []string{"idle", "claude", "my_proj.x"} {
 		if !strings.Contains(posts[0].Message, want) {
 			t.Errorf("root post %q lacks %q", posts[0].Message, want)
 		}
+	}
+	if strings.Contains(posts[0].Message, "w1:p1") {
+		t.Errorf("root post %q shows the pane id", posts[0].Message)
 	}
 
 	e.setAgent(t, "working")
@@ -300,7 +305,7 @@ func TestStatusToPostFlow(t *testing.T) {
 	if len(posts) != 5 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
 		t.Fatalf("unshare should mark the root post and post one notice: %+v", posts)
 	}
-	want := "⚪ Mirroring stopped for **api** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	want := "⚪ Mirroring stopped for **api** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
 	if n := posts[4]; n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
 		t.Fatalf("stop notice = %+v, want top-level %q", n, want)
 	}
@@ -343,8 +348,8 @@ func TestPaneMovedKeepsThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || !strings.Contains(posts[0].Message, "`w2:p1`") {
-		t.Fatalf("root post should name the new pane id: %+v", posts)
+	if len(posts) != 1 || strings.Contains(posts[0].Message, "w2:p1") {
+		t.Fatalf("root post should not show the pane id: %+v", posts)
 	}
 	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "go on", CreateAt: 100}))
 	if got := e.prompts(); got != "w2:p1|go on\n" {
@@ -369,7 +374,7 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 	if !strings.Contains(posts[0].Message, "Pane closed") {
 		t.Fatalf("root = %q", posts[0].Message)
 	}
-	want := "⚫ Pane closed, mirroring stopped for **web** · pane `w1:p1` · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
+	want := "⚫ Pane closed, mirroring stopped for **web** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
 	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
 		t.Fatalf("close notice = %+v, want one top-level %q", posts, want)
 	}
@@ -400,7 +405,7 @@ func TestStopNoticePostedWhenRootEditFails(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "edit time limit") {
 			t.Fatalf("%s = %v, want the edit error", stop, err)
 		}
-		if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "topped for pane `w1:p1`") {
+		if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "topped for ") || strings.Contains(posts[1].Message, "w1:p1") {
 			t.Fatalf("%s: the stop notice must be posted even when the root edit fails: %+v", stop, posts)
 		}
 	}
@@ -611,7 +616,7 @@ func TestLastReplyAndTruncate(t *testing.T) {
 		t.Fatalf("got %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	long := strings.Repeat("é", maxPost+10)
-	if got := truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {
+	if got := e.a.truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {
 		t.Fatalf("truncate: %d runes", len([]rune(got)))
 	}
 }
@@ -654,9 +659,18 @@ func TestReplyPromptsAgent(t *testing.T) {
 		t.Fatalf("blocked answer = %+v", posts)
 	}
 
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p1"].Name = "web"
+		panes["w2:p1"] = &pane{RootID: "root2", Status: "idle", Agent: "claude", Name: "web"}
+		panes["w3:p1"] = &pane{RootID: "root3", Status: "idle", Agent: "claude"}
+		return nil
+	})
 	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
-	if len(posts) != 3 || posts[2].RootID != "" || !strings.Contains(posts[2].Message, "w1:p1") || !strings.Contains(posts[2].Message, "/_redirect/pl/root1") {
+	m := posts[len(posts)-1].Message
+	if len(posts) != 3 || posts[2].RootID != "" || strings.Contains(m, "w1:p1") || strings.Contains(m, "pane `") ||
+		!strings.Contains(m, "**web** · claude · `proj` · [thread](") || !strings.Contains(m, "**web #2** · claude · `?` · [thread](") ||
+		!strings.Contains(m, "🟢 **idle** · claude · `?`") || !strings.Contains(m, "/_redirect/pl/root1") {
 		t.Fatalf("list answer = %+v", posts)
 	}
 }
@@ -847,10 +861,79 @@ func TestPaneNames(t *testing.T) {
 	}
 	tabs := []herdrTab{{"w1:t1", "1"}, {"w2:t1", "1"}, {"w2:t2", "second"}}
 	workspaces := []herdrWorkspace{{"w1", "solo", 1}, {"w2", "multi", 2}}
-	got := paneNames(panes, tabs, workspaces)
-	want := map[string]string{"w1:p1": "solo", "w2:p1": "multi / 1", "w2:p2": "multi / second", "w2:p3": "mybox"}
+	panes = append(panes, herdrPane{PaneID: "w3:p1", TabID: "w3:t1", WorkspaceID: "w3"})
+	workspaces = append(workspaces, herdrWorkspace{"w3", "└ worker", 1})
+	got, hidden := paneNames(panes, tabs, workspaces)
+	want := map[string]string{"w1:p1": "solo", "w2:p1": "multi / 1", "w2:p2": "multi / second", "w2:p3": "mybox", "w3:p1": "└ worker"}
 	if !maps.Equal(got, want) {
 		t.Fatalf("paneNames = %v, want %v", got, want)
+	}
+	if !maps.Equal(hidden, map[string]bool{"w1:p1": false, "w2:p1": false, "w2:p2": false, "w2:p3": false, "w3:p1": true}) {
+		t.Fatalf("hidden = %v", hidden)
+	}
+}
+
+func TestNumbered(t *testing.T) {
+	got := numbered(map[string]string{"w1:p1": "a", "w1:p2": "b", "w2:p1": "a", "w3:p1": "", "w4:p1": "a", "w5:p1": ""})
+	if want := map[string]string{"w1:p1": "a", "w1:p2": "b", "w2:p1": "a #2", "w3:p1": "", "w4:p1": "a #3", "w5:p1": ""}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+	got = numbered(map[string]string{"w12:p1": "a", "w3:p1": "a", "w1:p10": "b", "w1:p2": "b"})
+	if want := map[string]string{"w3:p1": "a", "w12:p1": "a #2", "w1:p2": "b", "w1:p10": "b #2"}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+	// herdr's ids count 1-9, then A-Z, then 0: wA comes after w9, and w13 after wV.
+	got = numbered(map[string]string{"wA:p1": "a", "w9:p1": "a", "w13:p1": "c", "wV:p1": "c", "w1:p10": "d", "w1:pA": "d", "w1:p9": "d"})
+	if want := map[string]string{"w9:p1": "a", "wA:p1": "a #2", "wV:p1": "c", "w13:p1": "c #2", "w1:p9": "d", "w1:pA": "d #2", "w1:p10": "d #3"}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+	// herdr gives w0 after wZ, then w11.
+	got = numbered(map[string]string{"w0:p1": "e", "w11:p1": "e", "wZ:p1": "e", "w1:p1": "e"})
+	if want := map[string]string{"w1:p1": "e", "wZ:p1": "e #2", "w0:p1": "e #3", "w11:p1": "e #4"}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
+}
+
+// TestSameLabelEverywhere numbers panes over every agent pane herdr reports and every mirrored pane,
+// so the popup, the list reply, the root post and the stop notice agree.
+func TestSameLabelEverywhere(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	agents, panesJSON := filepath.Join(e.herdrDir, "agents.json"), filepath.Join(e.herdrDir, "panes.json")
+	os.WriteFile(agents, []byte(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p2"}]}}`), 0o644)
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"},
+		{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
+
+	if err := e.a.toggle("w1:p2"); err != nil { // w1:p1 is not mirrored, yet it is the first "api"
+		t.Fatal(err)
+	}
+	if m := e.mm.snapshot()[0].Message; !strings.Contains(m, "· **api #2** · claude") {
+		t.Fatalf("root = %q", m)
+	}
+	rows, err := e.a.rows()
+	if err != nil || len(rows) != 2 || rows[0].Name != "api" || rows[1].ID != "w1:p2" || rows[1].Name != "api #2" {
+		t.Fatalf("rows = %+v %v", rows, err)
+	}
+	if got := e.a.topLevel("list"); !strings.Contains(got, "· **api #2** · claude") {
+		t.Fatalf("list = %q", got)
+	}
+	if err := e.a.toggle("w1:p2"); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.mm.snapshot()[1].Message; !strings.Contains(n, "for **api #2** · claude") {
+		t.Fatalf("stop notice = %q", n)
+	}
+
+	if err := e.a.toggle("w1:p2"); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(agents, []byte(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","cwd":"/work/my_proj.x","pane_id":"w1:p2"}]}}`), 0o644)
+	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	e.event(t, "pane.agent_status_changed", "w1:p2") // the root post drops the number at its next update
+	if m := e.mm.snapshot()[2].Message; !strings.Contains(m, "· **api** · claude") {
+		t.Fatalf("root after w1:p1 closed = %q", m)
 	}
 }
 
@@ -865,25 +948,43 @@ func TestStatus(t *testing.T) {
 	}
 	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
 	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"id":"cli:agent:list","result":{"type":"agent_list","agents":[
-		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"}]}}`), 0o644)
-	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","label":"web"}]}}`), 0o644)
+		{"agent":"claude","agent_status":"idle","cwd":"/src/app","pane_id":"w1:p2"},
+		{"agent":"codex","agent_status":"working","cwd":"/src/b","pane_id":"w1:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/src/c","pane_id":"w2:p1"},
+		{"agent":"claude","agent_status":"idle","cwd":"/src/d","pane_id":"w3:p1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","label":"web"},
+		{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","label":"zed"},
+		{"pane_id":"w2:p1","tab_id":"w2:t1","workspace_id":"w2","label":"web"},
+		{"pane_id":"w3:p1","tab_id":"w3:t1","workspace_id":"w3"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"a","tab_count":1},
+		{"workspace_id":"w2","label":"b","tab_count":1},{"workspace_id":"w3","label":"└ worker","tab_count":1}]}}`), 0o644)
 	rows, err := e.a.rows()
 	if err != nil {
 		t.Fatal(err)
+	}
+	var names []string
+	for _, r := range rows {
+		names = append(names, r.Name+"="+r.ID)
+	}
+	if want := []string{"web=w1:p2", "web #2=w2:p1", "zed=w1:p1"}; !slices.Equal(names, want) {
+		t.Fatalf("rows = %q, want %q", names, want)
 	}
 	out.Reset()
 	if err := e.a.status(&out, rows, 0); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
-	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "w1:p2", "🟢 idle", "claude", "/src/app"} {
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "🟢 idle", "claude"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("status = %q, want %q", s, want)
 		}
 	}
+	if strings.Contains(s, "w1:p2") || strings.Contains(s, "/src/app") || strings.Contains(s, "DIRECTORY") || strings.Contains(s, "PANE") {
+		t.Fatalf("status shows an id or directory: %q", s)
+	}
 	lines := strings.Split(s, "\n")
 	head, row := lines[2], lines[3]
-	for col, cell := range map[string]string{"NAME": "web", "PANE": "w1:p2", "AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
+	for col, cell := range map[string]string{"NAME": "web", "AGENT": "claude", "STATUS": "🟢"} {
 		if strings.Index(head, col) != strings.Index(row, cell) {
 			t.Fatalf("%s is not above %s:\n%s\n%s", col, cell, head, row)
 		}
@@ -946,5 +1047,64 @@ func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("q did not close the popup")
+	}
+}
+
+func TestCatalogComplete(t *testing.T) {
+	for key := range catalog["en"] {
+		if catalog["vi"][key] == "" {
+			t.Errorf("vi lacks %q", key)
+		}
+	}
+	for key := range catalog["vi"] {
+		if catalog["en"][key] == "" {
+			t.Errorf("en lacks %q", key)
+		}
+	}
+	for status := range emoji {
+		if catalog["en"][status] == "" {
+			t.Errorf("no text for status %q", status)
+		}
+	}
+	verbs := regexp.MustCompile(`%[a-z]`)
+	for key, en := range catalog["en"] {
+		if vi := catalog["vi"][key]; !slices.Equal(verbs.FindAllString(vi, -1), verbs.FindAllString(en, -1)) {
+			t.Errorf("%q takes different arguments in vi %q and en %q", key, vi, en)
+		}
+	}
+}
+
+func TestLanguageSwitch(t *testing.T) {
+	e := newTestEnv(t)
+	os.Remove(filepath.Join(e.a.stateDir, "lang"))
+	e.setAgent(t, "blocked")
+	if err := e.a.toggle("w1:p1"); err != nil { // Vietnamese by default
+		t.Fatal(err)
+	}
+	if m := e.mm.snapshot()[0].Message; m != "✋ **đang chờ bạn** · claude · `my_proj.x`\n_Trả lời trong thread này để gửi lệnh cho agent._" {
+		t.Fatalf("vi root = %q", m)
+	}
+	if err := e.a.switchLang(); err != nil {
+		t.Fatal(err)
+	}
+	e.setAgent(t, "idle")
+	e.event(t, "pane.agent_status_changed", "w1:p1") // the next status update switches the root post
+	if m := e.mm.snapshot()[0].Message; m != "🟢 **idle** · claude · `my_proj.x`\n_Reply in this thread to prompt the agent._" {
+		t.Fatalf("en root = %q", m)
+	}
+	e.a.switchLang()
+	if got := e.a.topLevel("list"); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
+		t.Fatalf("vi list = %q", got)
+	}
+	if got := e.a.truncate(strings.Repeat("x", 100), 50); !strings.HasSuffix(got, "\n… (đã cắt bớt)") {
+		t.Fatalf("vi truncate = %q", got)
+	}
+	e.a.token = ""
+	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN trong "+e.a.envPath {
+		t.Fatalf("vi toggle failure = %q", got)
+	}
+	e.a.token = "wrong"
+	if err := e.a.connect(); err == nil || !strings.HasPrefix(err.Error(), "đăng nhập Mattermost thất bại") {
+		t.Fatalf("vi connect = %v", err)
 	}
 }
