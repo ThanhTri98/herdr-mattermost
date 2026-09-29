@@ -350,15 +350,13 @@ func numbered(names map[string]string) map[string]string {
 	return out
 }
 
-// paneOrder orders pane ids like w12:p3 by workspace number, then pane number.
+// paneOrder orders pane ids like wV:p3 or w13:p2 by workspace, then pane. herdr counts each part up
+// like a number with digits 0-9 then A-V, so a shorter part comes first.
 func paneOrder(x, y string) int {
-	num := func(id string) (w, p int) {
-		fmt.Sscanf(id, "w%d:p%d", &w, &p)
-		return w, p
-	}
-	xw, xp := num(x)
-	yw, yp := num(y)
-	return cmp.Or(cmp.Compare(xw, yw), cmp.Compare(xp, yp), cmp.Compare(x, y))
+	xw, xp, _ := strings.Cut(x, ":")
+	yw, yp, _ := strings.Cut(y, ":")
+	count := func(a, b string) int { return cmp.Or(cmp.Compare(len(a), len(b)), cmp.Compare(a, b)) }
+	return cmp.Or(count(xw, yw), count(xp, yp))
 }
 
 // listRows marks which of herdr's agents are mirrored.

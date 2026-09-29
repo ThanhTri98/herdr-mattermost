@@ -869,6 +869,11 @@ func TestNumbered(t *testing.T) {
 	if want := map[string]string{"w3:p1": "a", "w12:p1": "a #2", "w1:p2": "b", "w1:p10": "b #2"}; !maps.Equal(got, want) {
 		t.Fatalf("numbered = %q, want %q", got, want)
 	}
+	// herdr's ids count 0-9 then A-V: wA comes after w9, and w13 after wV.
+	got = numbered(map[string]string{"wA:p1": "a", "w9:p1": "a", "w13:p1": "c", "wV:p1": "c", "w1:p10": "d", "w1:pA": "d", "w1:p9": "d"})
+	if want := map[string]string{"w9:p1": "a", "wA:p1": "a #2", "wV:p1": "c", "w13:p1": "c #2", "w1:p9": "d", "w1:pA": "d #2", "w1:p10": "d #3"}; !maps.Equal(got, want) {
+		t.Fatalf("numbered = %q, want %q", got, want)
+	}
 }
 
 // TestSameLabelEverywhere numbers panes over every agent pane herdr reports and every mirrored pane,
