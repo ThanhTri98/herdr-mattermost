@@ -445,6 +445,52 @@ func TestPromptedFollowsThread(t *testing.T) {
 	}
 }
 
+// TestQueuedThreadRepliesAllPosted posts the reply to every thread turn since the last idle, oldest first,
+// keeps terminal turns off, and considers only the newest reply when the last one handled is unknown.
+func TestQueuedThreadRepliesAllPosted(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "working")
+	e.appendTranscript(t, typed("t0", "before sharing"), assistant("r0", "m0", "text", "old answer", false))
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	root := e.mm.snapshot()[0].ID
+	send := func(m string, at int64) {
+		e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: m, CreateAt: at}))
+	}
+	idle := func(want ...string) {
+		t.Helper()
+		before := len(e.mm.snapshot())
+		e.setAgent(t, "idle")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		e.setAgent(t, "working")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		var got []string
+		for _, p := range e.mm.snapshot()[before:] {
+			if !strings.HasPrefix(p.Message, "📥") {
+				got = append(got, p.Message)
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("posted %q, want %q", got, want)
+		}
+	}
+	send("first", 100)
+	send("second", 101)
+	e.appendTranscript(t, typed("t1", "first"), assistant("t2", "m1", "text", "Working on it.", false), assistant("t3", "m2", "text", "First answer.", false),
+		typed("t4", "second"), assistant("t5", "m3", "text", "Second answer.", false))
+	idle("First answer.", "Second answer.")
+
+	send("third", 102)
+	e.appendTranscript(t, typed("t6", "third"), assistant("t7", "m4", "text", "Third answer.", false),
+		typed("t8", "typed in the terminal"), assistant("t9", "m5", "text", "terminal answer", false))
+	idle("Third answer.")
+
+	e.a.withState(func(panes map[string]*pane) error { panes["w1:p1"].LastReply = "gone"; return nil })
+	e.appendTranscript(t, typed("t10", "first"), assistant("t11", "m6", "text", "Old again.", false), typed("t12", "second"), assistant("t13", "m7", "text", "Newest.", false))
+	idle("Newest.")
+}
+
 func TestLastReplyAndTruncate(t *testing.T) {
 	if text, uuid, prompts, turn, err := lastReply(""); text != "" || uuid != "" || prompts != nil || turn != nil || err != nil {
 		t.Fatalf("no transcript: %q %q %q %q %v", text, uuid, prompts, turn, err)
