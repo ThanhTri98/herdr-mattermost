@@ -14,16 +14,22 @@ import (
 
 func TestCaptureCmd(t *testing.T) {
 	for msg, want := range map[string]string{
-		"@capture /context":    "/context",
-		"  @capture  fix it  ": "fix it",
-		"@capture":             "",
-		"@capture\n/context":   "/context",
+		"#capture /context":    "/context",
+		"  #capture  fix it  ": "fix it",
+		"#capture":             "",
+		"#capture\n/context":   "/context",
 	} {
 		if got, ok := captureCmd(msg); !ok || got != want {
 			t.Errorf("captureCmd(%q) = %q, %v; want %q", msg, got, ok, want)
 		}
 	}
-	for _, msg := range []string{"@capturex", "please @capture", "/context", ""} {
+	if got, ok := execCmd("#exec /clear"); !ok || got != "/clear" {
+		t.Errorf("execCmd = %q, %v", got, ok)
+	}
+	if _, ok := execCmd("#execute"); ok {
+		t.Error("execCmd(\"#execute\") matched")
+	}
+	for _, msg := range []string{"#capturex", "please #capture", "/context", ""} {
 		if _, ok := captureCmd(msg); ok {
 			t.Errorf("captureCmd(%q) matched", msg)
 		}
@@ -153,13 +159,13 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 	e.setAgent(t, "idle")
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("\x1b[1mContext\x1b[0m ⛁ 12%\r\n"), 0o644)
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "@capture /context", CreateAt: 1}))
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "#capture /context", CreateAt: 1}))
 	if ack := e.waitPost(t, 1); ack.Message != "📥 Received - the agent is working on it." {
 		t.Fatalf("ack = %+v", ack)
 	}
 	shot := e.waitPost(t, 2)
 	if got := e.prompts(); got != "w1:p1|/context\n" {
-		t.Fatalf("typed %q, want the text after @capture", got)
+		t.Fatalf("typed %q, want the text after #capture", got)
 	}
 	if shot.RootID != "root1" || shot.ChannelID != "dm" || len(shot.FileIDs) != 1 || shot.FileIDs[0] != "file1" || !strings.Contains(shot.Message, "w1:p1") {
 		t.Fatalf("screenshot post = %+v", shot)
@@ -175,12 +181,12 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 		t.Fatalf("Prompted = %q, want the typed text so the reply is still posted", p.Prompted)
 	}
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "@capture", CreateAt: 2}))
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "#capture", CreateAt: 2}))
 	if shot := e.waitPost(t, 3); len(shot.FileIDs) != 1 || shot.FileIDs[0] != "file2" {
-		t.Fatalf("bare @capture post = %+v", shot)
+		t.Fatalf("bare #capture post = %+v", shot)
 	}
 	if got := e.prompts(); got != "w1:p1|/context\n" {
-		t.Fatalf("bare @capture typed something: %q", got)
+		t.Fatalf("bare #capture typed something: %q", got)
 	}
 }
 

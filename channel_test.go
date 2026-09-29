@@ -207,3 +207,43 @@ func TestSettingsPrecedence(t *testing.T) {
 		t.Fatalf("an empty answer must not save the .env value: %+v", s)
 	}
 }
+
+func TestExecAndHelp(t *testing.T) {
+	e := mirroredEnv(t)
+	e.setAgent(t, "idle")
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p2"] = &pane{RootID: "root2", ChannelID: "ch1", Status: "idle", Agent: "claude"}
+		return nil
+	})
+	help, usage, ack := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"]
+	for _, c := range []struct {
+		p    post
+		want string // channel|root|answer
+	}{
+		{post{ID: "d1", ChannelID: "dm", RootID: "root1", Message: "#exec /clear"}, "dm|root1|" + ack},
+		{post{ID: "d2", ChannelID: "dm", RootID: "root1", Message: "#exec"}, "dm|root1|" + usage},
+		{post{ID: "d3", ChannelID: "dm", Message: "HELP"}, "dm||" + help},
+		{post{ID: "d4", ChannelID: "dm", Message: "@herdr help"}, "dm||" + help},
+		{post{ID: "d5", ChannelID: "dm", RootID: "root1", Message: "help"}, "dm|root1|" + ack}, // a bare help in a thread is a prompt
+		{post{ID: "d6", ChannelID: "dm", RootID: "root1", Message: "@herdr HELP"}, "dm|root1|" + help},
+		{post{ID: "c1", ChannelID: "ch1", Message: "@herdr #exec /compact"}, "ch1|c1|" + ack},
+		{post{ID: "c2", ChannelID: "ch1", RootID: "c1", Message: "@herdr help"}, "ch1|c1|" + help},
+		{post{ID: "c3", ChannelID: "ch1", Message: "help"}, ""}, // no mention in a channel: ignored
+	} {
+		c.p.UserID, c.p.CreateAt = "alice-id", int64(len(e.mm.snapshot())+1)*10
+		n := len(e.mm.snapshot())
+		if err := e.a.handleEvent(posted(c.p)); err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		if posts := e.mm.snapshot()[n:]; len(posts) > 0 {
+			got = posts[0].ChannelID + "|" + posts[0].RootID + "|" + posts[0].Message
+		}
+		if got != c.want {
+			t.Errorf("%q: answer %q, want %q", c.p.Message, got, c.want)
+		}
+	}
+	if got := e.prompts(); got != "w1:p1|/clear\nw1:p1|help\nw1:p2|/compact\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+}
