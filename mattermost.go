@@ -359,6 +359,10 @@ func (a *app) handlePost(p post, late bool) error {
 		a.sayIn(p.ChannelID, root, a.t("plugin.off"))
 		return errPluginOff
 	}
+	if h, _ := a.stripMention(text); strings.EqualFold(h, "help") {
+		a.sayIn(p.ChannelID, root, a.t("help"))
+		return nil
+	}
 	if inDM && root == "" {
 		a.say("", a.topLevel(text))
 		return nil
@@ -367,6 +371,12 @@ func (a *app) handlePost(p post, late bool) error {
 	if cmd, ok := captureCmd(text); ok && inDM { // the rest is typed like any reply, then the screen is posted once it settles
 		defer func() { go a.capture(root, cmd) }()
 		if cmd == "" {
+			return nil
+		}
+		text = cmd
+	} else if cmd, ok := execCmd(text); ok {
+		if cmd == "" {
+			a.sayIn(p.ChannelID, root, a.t("exec.usage"))
 			return nil
 		}
 		text = cmd

@@ -27,8 +27,15 @@ import (
 )
 
 // captureCmd reports whether a thread reply asks for a screenshot, and the text to type first.
-func captureCmd(msg string) (string, bool) {
-	rest, ok := strings.CutPrefix(strings.TrimSpace(msg), "@capture")
+func captureCmd(msg string) (string, bool) { return prefixCmd(msg, "#capture") }
+
+// execCmd reports whether a thread reply asks to type the rest as is, such as a "/clear" that
+// Mattermost would otherwise take as its own slash command.
+func execCmd(msg string) (string, bool) { return prefixCmd(msg, "#exec") }
+
+// prefixCmd reports whether msg starts with the word prefix, and the text after it.
+func prefixCmd(msg, prefix string) (string, bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(msg), prefix)
 	if !ok || rest != "" && !unicode.IsSpace(rune(rest[0])) {
 		return "", false
 	}
