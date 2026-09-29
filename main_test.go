@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -507,5 +509,97 @@ func TestConfigErrors(t *testing.T) {
 	env, err := readEnv(e.a.envPath)
 	if err != nil || env["MM_URL"] != "https://mm.example/" || env["MM_BOT_TOKEN"] != "t=1" || env["MM_USER"] != "@alice" {
 		t.Fatalf("readEnv = %v %v", env, err)
+	}
+}
+
+func TestStatus(t *testing.T) {
+	e := newTestEnv(t)
+	var out strings.Builder
+	if err := e.a.status(&out); err != nil {
+		t.Fatal(err)
+	}
+	if s := out.String(); !strings.Contains(s, "daemon: not running") || !strings.Contains(s, "No panes are mirrored") {
+		t.Fatalf("status = %q", s)
+	}
+	os.WriteFile(filepath.Join(e.a.stateDir, "daemon.lock"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p2"] = &pane{Status: "idle", Agent: "claude", Cwd: "/src/app"}
+		return nil
+	})
+	out.Reset()
+	if err := e.a.status(&out); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "w1:p2", "🟢 idle", "claude", "/src/app"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("status = %q, want %q", s, want)
+		}
+	}
+	lines := strings.Split(s, "\n")
+	head, row := lines[2], lines[3]
+	for col, cell := range map[string]string{"AGENT": "claude", "DIRECTORY": "/src/app", "STATUS": "🟢"} {
+		if strings.Index(head, col) != strings.Index(row, cell) {
+			t.Fatalf("%s is not above %s:\n%s\n%s", col, cell, head, row)
+		}
+	}
+
+	// A toggle or event hook holds state.lock across Mattermost calls; the popup must not wait for it.
+	lock, _ := os.OpenFile(filepath.Join(e.a.stateDir, "state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	defer lock.Close()
+	syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	done := make(chan error, 1)
+	go func() { done <- e.a.status(io.Discard) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("status waited for state.lock")
+	}
+}
+
+func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
+	e := newTestEnv(t)
+	os.WriteFile(filepath.Join(e.a.stateDir, "panes.json"), []byte("{"), 0o600)
+	cmd := exec.Command(os.Args[0], "status")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir)
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	var out []byte
+	for !strings.Contains(string(out), "Press q or Esc to close.") {
+		b := make([]byte, 256)
+		n, err := stdout.Read(b)
+		if err != nil {
+			t.Fatalf("popup output ended early: %q %v", out, err)
+		}
+		out = append(out, b[:n]...)
+	}
+	if !strings.Contains(string(out), "panes.json") {
+		t.Fatalf("popup = %q, want the panes.json error", out)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	for _, key := range []string{"\x1b[A", "Q"} { // up arrow starts with Esc
+		stdin.Write([]byte(key))
+		select {
+		case err := <-done:
+			t.Fatalf("popup closed on %q: %v", key, err)
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	stdin.Write([]byte("q"))
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("popup exit = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("q did not close the popup")
 	}
 }

@@ -5,6 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
+//	herdr-mm status  popup pane: show the daemon and the mirrored panes, then wait for q or Esc
 package main
 
 import (
@@ -19,15 +20,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"unicode/utf8"
 )
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event|stop")
+		fmt.Fprintln(os.Stderr, "usage: herdr-mm start|daemon|toggle|event|stop|status")
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
@@ -46,9 +49,19 @@ func main() {
 			err = a.event(os.Getenv("HERDR_PLUGIN_EVENT"), []byte(os.Getenv("HERDR_PLUGIN_EVENT_JSON")))
 		case "stop":
 			err = a.stop()
+		case "status":
+			err = a.status(os.Stdout)
 		default:
 			err = fmt.Errorf("unknown command")
 		}
+	}
+	if cmd == "status" {
+		if err != nil {
+			fmt.Printf("herdr-mm status: %v\n", err)
+		}
+		fmt.Print("\nPress q or Esc to close.")
+		waitQuit()
+		return
 	}
 	if err != nil {
 		log.Fatalf("herdr-mm %s: %v", cmd, err)
@@ -145,7 +158,7 @@ func (a *app) daemon() error {
 	if err := lock.Truncate(0); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprint(lock, os.Getpid()); err != nil { // read by stop
+	if _, err := fmt.Fprint(lock, os.Getpid()); err != nil { // read by stop and status
 		return err
 	}
 	if err := a.requireMM(); err != nil {
@@ -187,6 +200,65 @@ func (a *app) stop() error {
 	return nil
 }
 
+// daemonPid returns the pid of the running daemon, or 0. It does not take the lock, which would make
+// a daemon starting at that moment think another one is running.
+// ponytail: trusts the pid in daemon.lock; a reused pid reads as running until the next daemon start.
+func (a *app) daemonPid() int {
+	var pid int
+	b, _ := os.ReadFile(filepath.Join(a.stateDir, "daemon.lock"))
+	if _, err := fmt.Sscan(string(b), &pid); err != nil || pid <= 0 || syscall.Kill(pid, 0) != nil {
+		return 0
+	}
+	return pid
+}
+
+// status prints whether the daemon runs and the mirrored panes.
+func (a *app) status(w io.Writer) error {
+	if pid := a.daemonPid(); pid != 0 {
+		fmt.Fprintf(w, "Mattermost daemon: running (pid %d)\n\n", pid)
+	} else {
+		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
+	}
+	panes, err := a.readPanes()
+	if err != nil {
+		return err
+	}
+	if len(panes) == 0 {
+		fmt.Fprintln(w, "No panes are mirrored. Run the toggle action on an agent pane to mirror it.")
+		return nil
+	}
+	ids := make([]string, 0, len(panes))
+	for id := range panes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PANE\tAGENT\tDIRECTORY\tSTATUS")
+	for _, id := range ids {
+		p := panes[id]
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\n", id, p.Agent, p.Cwd, emoji[p.Status], p.Status)
+	}
+	return tw.Flush()
+}
+
+// waitQuit reads keys until q or Esc. stty puts the terminal in raw-enough mode without a dependency.
+func waitQuit() {
+	stty := func(args ...string) {
+		cmd := exec.Command("stty", args...)
+		cmd.Stdin = os.Stdin
+		cmd.Run()
+	}
+	stty("-icanon", "-echo", "min", "1")
+	defer stty("icanon", "echo")
+	b := make([]byte, 16)
+	for {
+		n, err := os.Stdin.Read(b)
+		if err != nil || n == 1 && (b[0] == 'q' || b[0] == 0x1b) {
+			return
+		}
+	}
+}
+
 // pluginOn reports whether the herdr server is running with this plugin enabled.
 func (a *app) pluginOn() bool {
 	var status struct{ Running bool }
@@ -223,16 +295,12 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	path := filepath.Join(a.stateDir, "panes.json")
-	panes := map[string]*pane{}
-	if b, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(b, &panes); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	panes, err := a.readPanes()
+	if err != nil {
 		return err
 	}
 	fnErr := fn(panes) // saved even on error: fn only records what already happened
+	path := filepath.Join(a.stateDir, "panes.json")
 	b, err := json.MarshalIndent(panes, "", "  ")
 	if err == nil {
 		err = os.WriteFile(path+".tmp", b, 0o600)
@@ -241,6 +309,20 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 		err = os.Rename(path+".tmp", path)
 	}
 	return errors.Join(fnErr, err)
+}
+
+// readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
+func (a *app) readPanes() (map[string]*pane, error) {
+	path := filepath.Join(a.stateDir, "panes.json")
+	panes := map[string]*pane{}
+	if b, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(b, &panes); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	return panes, nil
 }
 
 func (a *app) toggle(id string) error {

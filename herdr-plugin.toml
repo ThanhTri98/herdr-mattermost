@@ -12,6 +12,22 @@ command = ["go", "build", "-o", "herdr-mm", "."]
 id = "daemon"
 command = ["sh", "-c", "exec ./herdr-mm start"]
 
+[[panes]]
+id = "status"
+title = "Mattermost status"
+description = "The daemon and the panes mirrored to Mattermost"
+placement = "popup"
+width = "90%"
+command = ["sh", "-c", "exec ./herdr-mm status"]
+
+[[actions]]
+id = "status"
+title = "Show Mattermost status"
+description = "Open a popup listing the mirrored panes and whether the daemon runs"
+contexts = ["global", "workspace", "pane"]
+# herdr's popup is a singleton, so opening it twice is not an error
+command = ["sh", "-c", "out=$(\"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin herdr-mattermost --entrypoint status 2>&1) || case $out in *'already open'*) ;; *) echo \"$out\" >&2; exit 1 ;; esac"]
+
 [[actions]]
 id = "toggle"
 title = "Toggle Mattermost mirroring"
