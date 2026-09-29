@@ -1121,3 +1121,31 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("vi connect = %v", err)
 	}
 }
+
+func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	root := e.mm.snapshot()[0].ID
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "late one", CreateAt: 100}))
+	e.appendTranscript(t, typed("u1", "late one"))
+	go func() { // Claude writes the final entry just after herdr reports idle
+		time.Sleep(300 * time.Millisecond)
+		e.appendTranscript(t, assistant("u2", "m1", "text", "Written late.", false))
+	}()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	posts := e.mm.snapshot()
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Written late." {
+		t.Fatalf("the reply must be posted for its own turn: %+v", posts)
+	}
+
+	// A turn typed in the terminal is never waited for.
+	e.appendTranscript(t, typed("u3", "typed in the terminal"))
+	start := time.Now()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if d := time.Since(start); d > transcriptSettle/2 {
+		t.Fatalf("a terminal turn waited %s", d)
+	}
+}

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 	"unicode/utf8"
 )
 
@@ -961,9 +962,14 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
-		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
-		// wait for the transcript to settle if replies ever come out one turn behind.
-		rs, _, cleared, err := replies(a.transcript(info))
+		// Claude can write a turn's final entry a few tens of ms after herdr says idle, so a turn typed
+		// from the thread that has no reply yet is re-read for a short while before giving up.
+		path := a.transcript(info)
+		rs, turn, cleared, err := replies(path)
+		for deadline := time.Now().Add(transcriptSettle); err == nil && p.fromThread(turn) && !answered(rs, turn) && time.Now().Before(deadline); {
+			time.Sleep(transcriptPoll)
+			rs, turn, cleared, err = replies(path)
+		}
 		if err != nil {
 			return err
 		}
@@ -1026,6 +1032,14 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		p.LastDialog = ""
 	}
 	return nil
+}
+
+// transcriptSettle bounds how long an idle hook waits for the reply of a turn typed from the thread.
+var transcriptSettle, transcriptPoll = 2 * time.Second, 100 * time.Millisecond
+
+// answered reports whether the newest reply belongs to the turn in effect.
+func answered(rs []reply, turn []string) bool {
+	return len(rs) > 0 && slices.Equal(rs[len(rs)-1].prompts, turn)
 }
 
 var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
