@@ -466,8 +466,8 @@ func TestQueuedThreadRepliesAllPosted(t *testing.T) {
 }
 
 // TestQueuedThreadRepliesInNewTranscript posts every queued thread turn of a transcript that had no turns
-// yet, whether the pane was shared before its first prompt or /clear started a new one with no event, and
-// reposts only a turn that went on after a usage limit.
+// yet, whether the pane was shared before its first prompt, a new agent started in it or /clear started a
+// new one with no event, and reposts only a turn that went on after a usage limit.
 func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 	e, send, idle := threadTurns(t)
 	send("first", 100)
@@ -476,17 +476,25 @@ func TestQueuedThreadRepliesInNewTranscript(t *testing.T) {
 		typed("t3", "second"), assistant("t4", "m2", "text", "Second answer.", false))
 	idle("First answer.", "Second answer.")
 
+	os.Remove(e.transcript)
+	idle()
+	send("again one", 102)
+	send("again two", 103)
+	e.appendTranscript(t, typed("b1", "again one"), assistant("b2", "mb1", "text", "Again one answer.", false),
+		typed("b3", "again two"), assistant("b4", "mb2", "text", "Again two answer.", false))
+	idle("Again one answer.", "Again two answer.")
+
 	os.WriteFile(e.transcript, nil, 0o644)
 	e.appendTranscript(t, `{"type":"user","isMeta":true,"uuid":"c0","message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"}}`,
 		typed("c1", "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"),
 		`{"type":"system","subtype":"local_command","uuid":"c2","content":"<local-command-stdout></local-command-stdout>"}`)
-	send("third", 102)
-	send("fourth", 103)
+	send("third", 104)
+	send("fourth", 105)
 	e.appendTranscript(t, typed("t5", "third"), assistant("t6", "m3", "text", "Third answer.", false),
 		typed("t7", "fourth"), assistant("t8", "m4", "text", "Fourth answer.", false))
 	idle("Third answer.", "Fourth answer.")
 
-	send("fifth", 104)
+	send("fifth", 106)
 	e.appendTranscript(t, typed("t9", "fifth"), assistant("t10", "m5", "text", "You've hit your session limit · resets 12:20am", false))
 	idle("You've hit your session limit · resets 12:20am")
 	e.appendTranscript(t, `{"type":"user","isMeta":true,"origin":{"kind":"auto-continuation"},"uuid":"t11","message":{"role":"user","content":"Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work."}}`,

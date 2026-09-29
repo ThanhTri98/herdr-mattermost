@@ -552,16 +552,21 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
 		rs, _, cleared, err := replies(a.transcript(info))
-		if err != nil || len(rs) == 0 {
+		if err != nil {
 			return err
 		}
 		// Every turn since the last one handled is posted, so a thread reply sent while the agent was
 		// still answering the previous one doesn't hide that answer. All turns are considered when none
-		// was handled yet, as when a pane is shared before its first prompt, or when /clear started the
-		// transcript. Otherwise, when the last turn handled is not in it, as after resuming another
-		// session, only the newest is considered so old history stays out.
-		// ponytail: resuming a session /clear started considers all its turns; record the session with
-		// LastReply if old thread-prompted answers ever get reposted.
+		// was handled yet, as when a pane is shared before its first prompt or a new agent starts in it,
+		// or when /clear started the transcript. Otherwise, when the last turn handled is not in it, as
+		// after resuming another session, only the newest is considered so old history stays out.
+		// ponytail: resuming a session /clear started, or one resumed before a new agent's first turn,
+		// considers all its turns; record the session with LastReply if old thread-prompted answers ever
+		// get reposted.
+		if len(rs) == 0 {
+			p.LastReply = ""
+			return nil
+		}
 		next := rs
 		if i := slices.IndexFunc(rs, func(r reply) bool { return slices.Contains(r.uuids, p.LastReply) }); i >= 0 {
 			next = rs[i:]
