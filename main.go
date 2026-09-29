@@ -963,12 +963,13 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	case "idle", "done":
 		p.LastDialog = ""
 		// Claude can write a turn's final entry a few tens of ms after herdr says idle, so a turn typed
-		// from the thread that has no reply yet is re-read for a short while before giving up.
+		// from the thread that has no reply yet, or ends in a tool step, is re-read for a short while
+		// before giving up.
 		path := a.transcript(info)
-		rs, turn, cleared, err := replies(path)
-		for deadline := time.Now().Add(transcriptSettle); err == nil && p.fromThread(turn) && !answered(rs, turn) && time.Now().Before(deadline); {
+		rs, turn, cleared, open, err := replies(path)
+		for deadline := time.Now().Add(transcriptSettle); err == nil && p.fromThread(turn) && !answered(rs, turn, open) && time.Now().Before(deadline); {
 			time.Sleep(transcriptPoll)
-			rs, turn, cleared, err = replies(path)
+			rs, turn, cleared, open, err = replies(path)
 		}
 		if err != nil {
 			return err
@@ -1037,9 +1038,9 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 // transcriptSettle bounds how long an idle hook waits for the reply of a turn typed from the thread.
 var transcriptSettle, transcriptPoll = 2 * time.Second, 100 * time.Millisecond
 
-// answered reports whether the newest reply belongs to the turn in effect.
-func answered(rs []reply, turn []string) bool {
-	return len(rs) > 0 && slices.Equal(rs[len(rs)-1].prompts, turn)
+// answered reports whether the newest reply belongs to the turn in effect and no tool step follows it.
+func answered(rs []reply, turn []string, open bool) bool {
+	return !open && len(rs) > 0 && slices.Equal(rs[len(rs)-1].prompts, turn)
 }
 
 var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
@@ -1191,7 +1192,7 @@ func tag(s, name string) string {
 // uuid of its last entry, the prompts typed in its turn and those of the turn in effect at the end of
 // the transcript.
 func lastReply(path string) (text, uuid string, prompts, turn []string, err error) {
-	rs, turn, _, err := replies(path)
+	rs, turn, _, _, err := replies(path)
 	if len(rs) == 0 {
 		return "", "", nil, turn, err
 	}
@@ -1207,17 +1208,17 @@ type reply struct {
 }
 
 // replies returns the reply of every main-thread turn in a Claude transcript, oldest first, the prompts
-// of the turn in effect at its end and whether its first typed prompt is /clear, which starts a new
-// transcript. A turn starts at a typed prompt or a task notification, which
-// keeps the prompts of the turn it resumes. Claude writes one entry per content block, so text is gathered
-// by message id.
-func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
+// of the turn in effect at its end, whether its first typed prompt is /clear, which starts a new
+// transcript, and whether it ends in a tool call or result with no text after it. A turn starts at a
+// typed prompt or a task notification, which keeps the prompts of the turn it resumes. Claude writes one
+// entry per content block, so text is gathered by message id.
+func replies(path string) (rs []reply, turn []string, cleared, open bool, err error) {
 	if path == "" {
-		return nil, nil, false, nil
+		return nil, nil, false, false, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, false, false, err
 	}
 	defer f.Close()
 	var msgID, uuid string
@@ -1253,6 +1254,8 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
 			var s string
 			var blocks []block
+			json.Unmarshal(e.Message.Content, &blocks)
+			open = slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "tool_result" })
 			if json.Unmarshal(e.Message.Content, &s) == nil {
 				if name := tag(s, "command-name"); strings.HasPrefix(s, "<command-") && name != "" {
 					s = name + " " + tag(s, "command-args") // a slash command is recorded as tags
@@ -1260,7 +1263,7 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 				cleared = cleared || turn == nil && strings.TrimSpace(s) == "/clear"
 				endTurn()
 				turn = []string{pasteMarker.ReplaceAllString(s, "")}
-			} else if json.Unmarshal(e.Message.Content, &blocks) == nil && !slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "tool_result" }) {
+			} else if blocks != nil && !open {
 				var t []string // a prompt with a pasted image is recorded as blocks
 				for _, b := range blocks {
 					if b.Type == "text" {
@@ -1279,8 +1282,10 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 			json.Unmarshal(e.Message.Content, &content)
 			var t []string
 			for _, c := range content {
-				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
-					t = append(t, c.Text)
+				if c.Type == "tool_use" {
+					open = true
+				} else if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+					t, open = append(t, c.Text), false
 				}
 			}
 			if len(t) > 0 {
@@ -1292,10 +1297,10 @@ func replies(path string) (rs []reply, turn []string, cleared bool, err error) {
 		}
 		if readErr == io.EOF {
 			endTurn()
-			return rs, turn, cleared, nil
+			return rs, turn, cleared, open, nil
 		}
 		if readErr != nil {
-			return nil, nil, false, readErr
+			return nil, nil, false, false, readErr
 		}
 	}
 }

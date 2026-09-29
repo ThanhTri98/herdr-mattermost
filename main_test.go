@@ -1141,8 +1141,22 @@ func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
 		t.Fatalf("the reply must be posted for its own turn: %+v", posts)
 	}
 
+	// Text written before a tool call is not the answer while the turn still ends in the tool step.
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "fix the bug", CreateAt: 101}))
+	e.appendTranscript(t, typed("u3", "fix the bug"), assistant("u4", "m2", "text", "Let me look.", false), assistant("u5", "m2", "tool_use", "", false),
+		`{"type":"user","uuid":"u6","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}`)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		e.appendTranscript(t, assistant("u7", "m3", "text", "Fixed.", false))
+	}()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	posts = e.mm.snapshot()
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Fixed." || slices.ContainsFunc(posts, func(p post) bool { return p.Message == "Let me look." }) {
+		t.Fatalf("the final text must be posted as the reply: %+v", posts)
+	}
+
 	// A turn typed in the terminal is never waited for.
-	e.appendTranscript(t, typed("u3", "typed in the terminal"))
+	e.appendTranscript(t, typed("u8", "typed in the terminal"))
 	start := time.Now()
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	if d := time.Since(start); d > transcriptSettle/2 {
