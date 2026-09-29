@@ -46,6 +46,27 @@ func TestOnePanePerChannel(t *testing.T) {
 	}
 }
 
+func TestRetargetStartsNewThreadWhenStopFails(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	e.mm.mu.Lock()
+	e.mm.failPatch = true
+	e.mm.mu.Unlock()
+	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err == nil || !strings.Contains(err.Error(), "edit time limit") {
+		t.Fatalf("retarget = %v, want the edit error", err)
+	}
+	panes, err := e.a.readPanes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := panes["w1:p1"]; p == nil || p.ChannelID != "ch1" {
+		t.Fatalf("the pane must be mirrored in the new channel even when stopping the old thread fails: %+v", panes)
+	}
+}
+
 func TestChannelControl(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "idle")

@@ -820,10 +820,7 @@ func (a *app) retarget(id string, to target) error {
 	if err != nil || !changed || !mirrored {
 		return err
 	}
-	if err := a.toggle(id); err != nil {
-		return err
-	}
-	return a.toggle(id)
+	return errors.Join(a.toggle(id), a.toggle(id))
 }
 
 // readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
