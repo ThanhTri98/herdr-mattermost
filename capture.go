@@ -41,8 +41,8 @@ var (
 	capturePoll    = 500 * time.Millisecond
 )
 
-// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is not working
-// and the screen has settled.
+// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is blocked, or is
+// not working and the screen has settled.
 func (a *app) capture(rootID string) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -72,7 +72,8 @@ func (a *app) capture(rootID string) {
 	}
 }
 
-// settledScreen reads the pane's visible screen once it has settled. settled is false when it timed out.
+// settledScreen reads the pane's visible screen once it has settled or the agent is blocked. settled is
+// false when it timed out.
 func (a *app) settledScreen(id string) (screen []byte, settled bool, err error) {
 	deadline := time.Now().Add(captureTimeout)
 	var since time.Time
