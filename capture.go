@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/draw"
 	"image/png"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
@@ -39,9 +40,9 @@ var (
 	capturePoll    = 500 * time.Millisecond
 )
 
-// capture posts a screenshot of the pane mirrored in the thread rootID. After typing a prompt, wait
-// holds it until the agent is not working and the screen has settled.
-func (a *app) capture(rootID string, wait bool) {
+// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is not working
+// and the screen has settled.
+func (a *app) capture(rootID string) {
 	panes, err := a.readPanes()
 	if err != nil {
 		log.Printf("capture: %v", err)
@@ -56,7 +57,7 @@ func (a *app) capture(rootID string, wait bool) {
 	if id == "" {
 		return
 	}
-	screen, settled, err := a.settledScreen(id, wait)
+	screen, settled, err := a.settledScreen(id)
 	if err != nil {
 		a.say(rootID, "❌ Could not read the pane: "+err.Error())
 		return
@@ -70,15 +71,14 @@ func (a *app) capture(rootID string, wait bool) {
 	}
 }
 
-// settledScreen reads the pane's visible screen, waiting for it to settle when wait is set. settled is
-// false when it timed out.
-func (a *app) settledScreen(id string, wait bool) (screen []byte, settled bool, err error) {
+// settledScreen reads the pane's visible screen once it has settled. settled is false when it timed out.
+func (a *app) settledScreen(id string) (screen []byte, settled bool, err error) {
 	deadline := time.Now().Add(captureTimeout)
 	var since time.Time
 	for {
 		s, err := a.herdr("pane", "read", id, "--source", "visible", "--format", "ansi")
-		if err != nil || !wait {
-			return s, true, err
+		if err != nil {
+			return nil, false, err
 		}
 		if !bytes.Equal(s, screen) {
 			screen, since = s, time.Now()
@@ -94,12 +94,11 @@ func (a *app) settledScreen(id string, wait bool) (screen []byte, settled bool, 
 	}
 }
 
-// postScreen posts the grid into the thread as a PNG, or as text when no font is found.
+// postScreen posts the grid into the thread as a PNG.
 func (a *app) postScreen(rootID, msg string, g [][]cell) error {
 	faces, err := loadFonts()
 	if err != nil {
-		a.say(rootID, fmt.Sprintf("%s\n%v, so here it is as text:\n```\n%s\n```", msg, err, truncate(gridText(g), maxPost-1000)))
-		return nil
+		return err
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, render(g, faces)); err != nil {
@@ -295,25 +294,6 @@ func wide(r rune) bool {
 	return k == width.EastAsianWide || k == width.EastAsianFullwidth
 }
 
-// gridText is the grid as plain text.
-func gridText(g [][]cell) string {
-	lines := make([]string, len(g))
-	for y, row := range g {
-		var b strings.Builder
-		for x := 0; x < len(row); x++ {
-			if row[x].text == "" {
-				b.WriteByte(' ')
-			}
-			b.WriteString(row[x].text)
-			if row[x].wide {
-				x++
-			}
-		}
-		lines[y] = strings.TrimRight(b.String(), " ")
-	}
-	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
-}
-
 // fontPaths are where common monospace fonts live on Linux and macOS.
 var fontPaths = []string{
 	"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -331,7 +311,14 @@ var fontPaths = []string{
 // fallbackPaths are fonts searched, in order, for characters the monospace font lacks.
 var fallbackPaths = []string{
 	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+	"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+	"/usr/share/fonts/TTF/DejaVuSans.ttf",
+	"/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+	"/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf",
+	"/usr/share/fonts/noto/NotoSansSymbols-Regular.ttf",
+	"/usr/share/fonts/google-noto/NotoSansSymbols-Regular.ttf",
 	"/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+	"/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
 	"/usr/share/fonts/google-noto/NotoSansSymbols2-Regular.ttf",
 	"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
 	"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -381,9 +368,26 @@ func openFace(path string) font.Face {
 	return face
 }
 
-// render draws the grid with face, one cell per character.
+// substitutes stand in for characters no font has: the free space and autocompact buffer squares
+// of Claude's /context.
+var substitutes = map[rune]rune{0x26f6: '□', 0x26dd: '⊠'}
+
+// faceFor returns the first face that has r, or else r's substitute. ok is false when none has either.
+func faceFor(faces []font.Face, r rune) (font.Face, rune, bool) {
+	for _, r := range []rune{r, substitutes[r]} {
+		for _, f := range faces {
+			if _, ok := f.GlyphAdvance(r); ok && r != 0 {
+				return f, r, true
+			}
+		}
+	}
+	return faces[0], r, false
+}
+
+const pad = 8 // pixels around the screen
+
+// render draws the grid in cells the size of the first face's, one cell per character.
 func render(g [][]cell, faces []font.Face) image.Image {
-	const pad = 8
 	adv, _ := faces[0].GlyphAdvance('M')
 	m := faces[0].Metrics()
 	cw, ch := adv.Ceil(), (m.Ascent + m.Descent).Ceil()
@@ -393,7 +397,6 @@ func render(g [][]cell, faces []font.Face) image.Image {
 	}
 	img := image.NewRGBA(image.Rect(0, 0, 2*pad+cols*cw, 2*pad+max(len(g), 1)*ch))
 	draw.Draw(img, img.Bounds(), image.NewUniform(defaultBG), image.Point{}, draw.Src)
-	d := &font.Drawer{Dst: img}
 	for y, row := range g {
 		for x := 0; x < len(row); x++ {
 			c := row[x]
@@ -407,17 +410,18 @@ func render(g [][]cell, faces []font.Face) image.Image {
 			}
 			px, py := pad+x*cw, pad+y*ch
 			draw.Draw(img, image.Rect(px, py, px+w, py+ch), image.NewUniform(bg), image.Point{}, draw.Src)
-			if c.text != "" {
-				d.Src, d.Face = image.NewUniform(fg), faces[0]
-				for _, f := range faces {
-					if _, ok := f.GlyphAdvance([]rune(c.text)[0]); ok {
-						d.Face = f
-						break
-					}
+			for i, r := range []rune(c.text) {
+				f, r, ok := faceFor(faces, r)
+				if !ok && i > 0 {
+					continue // a mark or joiner no font has
+				}
+				dot := fixed.P(px, py+m.Ascent.Ceil())
+				if i > 0 { // a mark ends where its cell does, so it stays over its character
+					adv, _ := f.GlyphAdvance(r)
+					dot.X += fixed.I(w) - adv
 				}
 				for dx := range 1 + btoi(c.bold) { // bold is drawn twice, one pixel apart
-					d.Dot = fixed.P(px+dx, py+m.Ascent.Ceil())
-					d.DrawString(c.text)
+					glyph(img, f, r, dot.Add(fixed.P(dx, 0)), w, py+ch/2, image.NewUniform(fg))
 				}
 			}
 			if c.wide {
@@ -426,6 +430,22 @@ func render(g [][]cell, faces []font.Face) image.Image {
 		}
 	}
 	return img
+}
+
+// glyph draws r from f at dot, as f's box when f lacks it. A glyph wider than w is shrunk towards dot's
+// x and the row mid, so it fits its cell.
+func glyph(img *image.RGBA, f font.Face, r rune, dot fixed.Point26_6, w, mid int, src image.Image) {
+	dr, mask, mp, adv, _ := f.Glyph(dot, r)
+	if k := float64(fixed.I(w)) / float64(adv); k < 1 {
+		x := dot.X.Round()
+		scale := func(v, o int) int { return o + int(math.Round(float64(v-o)*k)) }
+		sr := image.Rectangle{mp, mp.Add(dr.Size())}
+		dr = image.Rect(scale(dr.Min.X, x), scale(dr.Min.Y, mid), scale(dr.Max.X, x), scale(dr.Max.Y, mid))
+		shrunk := image.NewAlpha(dr)
+		draw.CatmullRom.Scale(shrunk, dr, mask, sr, draw.Src, nil)
+		mask, mp = shrunk, dr.Min
+	}
+	draw.DrawMask(img, dr, src, image.Point{}, mask, mp, draw.Over)
 }
 
 func btoi(b bool) int {

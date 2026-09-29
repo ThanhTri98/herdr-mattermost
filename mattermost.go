@@ -276,14 +276,12 @@ func (a *app) handlePost(p post, late bool) error {
 		return nil
 	}
 
-	cmd, capture := captureCmd(p.Message)
-	if capture && cmd == "" {
-		go a.capture(p.RootID, false)
-		return nil
-	}
-	if capture { // typed like any reply, then the screen is posted once it settles
+	if cmd, ok := captureCmd(p.Message); ok { // the rest is typed like any reply, then the screen is posted once it settles
+		defer func() { go a.capture(p.RootID) }()
+		if cmd == "" {
+			return nil
+		}
 		p.Message = cmd
-		defer func() { go a.capture(p.RootID, true) }()
 	}
 	var paneID string
 	var prev recent

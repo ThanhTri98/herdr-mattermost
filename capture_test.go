@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"image/color"
 	"os"
 	"path/filepath"
@@ -50,8 +51,59 @@ func TestParseANSI(t *testing.T) {
 	if c := g[1][4]; c.bg != (color.RGBA{1, 2, 3, 0xff}) || !g[1][5].reversed {
 		t.Errorf("truecolour background, reverse = %+v %+v", c, g[1][5])
 	}
-	if got := gridText(g); got != "ok Đỏ\n中xé r\n        tab" {
-		t.Errorf("gridText = %q", got)
+	if row := g[2]; len(row) != 11 || row[7].text != "" || row[8].text != "t" {
+		t.Errorf("tab row = %+v", row)
+	}
+}
+
+// cellsDiffer reports whether one-row images a and b differ anywhere in columns [from, to).
+func cellsDiffer(a, b image.Image, from, to int) bool {
+	for y := a.Bounds().Min.Y; y < a.Bounds().Max.Y; y++ {
+		for x := from; x < to; x++ {
+			if a.At(x, y) != b.At(x, y) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestRenderKeepsGlyphsInTheirCells(t *testing.T) {
+	faces, err := loadFonts()
+	if err != nil {
+		t.Skip(err)
+	}
+	adv, _ := faces[0].GlyphAdvance('M')
+	cw := adv.Ceil()
+	row := func(s string) image.Image { return render(parseANSI(s), faces) }
+
+	plain, marked := row("ex"), row("e\u0301x")
+	if !cellsDiffer(plain, marked, pad, pad+cw) {
+		t.Error("the combining acute accent is not drawn in its cell")
+	}
+	if cellsDiffer(plain, marked, pad+cw, plain.Bounds().Max.X) {
+		t.Error("the combining acute accent is drawn outside its cell")
+	}
+
+	for s, cells := range map[string]int{"⛀": 1, "⛁": 1, "中": 2} { // 中 is a box without a CJK font
+		blank, img := row(strings.Repeat(" ", cells)), row(s)
+		if !cellsDiffer(blank, img, pad, pad+cells*cw) || cellsDiffer(blank, img, pad+cells*cw, img.Bounds().Max.X) {
+			t.Errorf("%s is not drawn within its cell", s)
+		}
+	}
+
+	has := func(r rune) bool {
+		for _, f := range faces {
+			if _, ok := f.GlyphAdvance(r); ok {
+				return true
+			}
+		}
+		return false
+	}
+	for from, to := range substitutes {
+		if a := row(string(from)); !has(from) && has(to) && cellsDiffer(a, row(string(to)), 0, a.Bounds().Max.X) {
+			t.Errorf("%c, which no font has, is not drawn as %c", from, to)
+		}
 	}
 }
 
@@ -117,17 +169,25 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 func TestCaptureTimeoutAndNoFont(t *testing.T) {
 	fastCapture(t)
 	captureTimeout = 300 * time.Millisecond
-	fonts := fontPaths
-	fontPaths = nil
-	t.Cleanup(func() { fontPaths = fonts })
 	e := mirroredEnv(t)
 	e.setAgent(t, "working")
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("\x1b[32mstill going\x1b[0m\r\n"), 0o644)
 
-	e.a.capture("root1", true)
+	fonts := fontPaths
+	fontPaths = nil
+	e.a.capture("root1")
+	fontPaths = fonts
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.Contains(posts[0].Message, "still changing") ||
-		!strings.Contains(posts[0].Message, "no monospace font found") || !strings.Contains(posts[0].Message, "```\nstill going\n```") {
-		t.Fatalf("posts = %+v", posts)
+	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.HasPrefix(posts[0].Message, "❌ Could not post the screenshot: no monospace font found") {
+		t.Fatalf("no-font posts = %+v", posts)
+	}
+
+	if _, err := loadFonts(); err != nil {
+		t.Skip(err)
+	}
+	e.a.capture("root1")
+	posts = e.mm.snapshot()
+	if len(posts) != 2 || len(posts[1].FileIDs) != 1 || !strings.Contains(posts[1].Message, "still changing") {
+		t.Fatalf("timed-out posts = %+v", posts)
 	}
 }
