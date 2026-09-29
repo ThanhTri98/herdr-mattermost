@@ -195,7 +195,7 @@ func (a *app) patchPost(id, message string) error {
 	return a.api(http.MethodPut, "/posts/"+id+"/patch", map[string]string{"message": a.truncate(message, maxPost)}, nil)
 }
 
-// listen keeps a WebSocket open to Mattermost to hear DM messages. Reconnects until the plugin is off.
+// listen keeps a WebSocket open to Mattermost to hear DM and linked channel messages. Reconnects until the plugin is off.
 func (a *app) listen() error {
 	for {
 		err := a.listenOnce()
@@ -328,7 +328,8 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 // the bot there is told only MM_USER is obeyed. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
-	// control by integrations.
+	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
+	// the id of the member who made the change, and their text can hold a mention of the bot.
 	if p.UserID == a.botID || p.Type != "" || fmt.Sprint(p.Props["from_bot"]) == "true" || fmt.Sprint(p.Props["from_webhook"]) == "true" {
 		return nil
 	}

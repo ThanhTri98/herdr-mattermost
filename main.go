@@ -5,7 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
-//	herdr-mm status  popup pane: list agent panes, toggle the selected one, close on q or Esc
+//	herdr-mm status  popup pane: list agent panes, toggle the selected one, pick its DM or channel, edit the settings, close on q or Esc
 package main
 
 import (
