@@ -59,7 +59,7 @@ func main() {
 		}
 	}
 	if cmd == "status" { // load failed; show why until closed
-		fmt.Printf("herdr-mm status: %v\n\nPress q or Esc to close.", err)
+		fmt.Printf("herdr-mm status: %v\n\n%s", err, catalog[lang(os.Getenv("HERDR_PLUGIN_STATE_DIR"))]["popup.close"])
 		waitQuit()
 		return
 	}
@@ -358,25 +358,25 @@ func listRows(agents []listedAgent, panes map[string]*pane) []row {
 // status prints whether the daemon runs and the rows, with a cursor on rows[sel].
 func (a *app) status(w io.Writer, rows []row, sel int) error {
 	if pid := a.daemonPid(); pid != 0 {
-		fmt.Fprintf(w, "Mattermost daemon: running (pid %d)\n\n", pid)
+		fmt.Fprintf(w, a.t("popup.running")+"\n\n", pid)
 	} else {
-		fmt.Fprint(w, "Mattermost daemon: not running\n\n")
+		fmt.Fprint(w, a.t("popup.stopped")+"\n\n")
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "No agent panes.")
+		fmt.Fprintln(w, a.t("popup.none"))
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, " \tNAME\tAGENT\tSTATUS\tMIRRORED")
+	fmt.Fprintln(tw, a.t("popup.header"))
 	for i, r := range rows {
 		cursor, on := " ", ""
 		if i == sel {
 			cursor = ">"
 		}
 		if r.Mirrored {
-			on = "yes"
+			on = a.t("popup.yes")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], r.Status, on)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on)
 	}
 	return tw.Flush()
 }
@@ -400,7 +400,7 @@ func (a *app) popup() {
 		if msg != "" {
 			fmt.Printf("\n%s\n", msg)
 		}
-		fmt.Print("\n↑/↓ or j/k to move, Enter or Space to toggle mirroring. Press q or Esc to close.")
+		fmt.Print("\n" + a.t("popup.hint"))
 		n, err := os.Stdin.Read(b)
 		k := string(b[:n])
 		if err != nil || k == "\x1b" {
@@ -415,6 +415,10 @@ func (a *app) popup() {
 			switch key {
 			case "q":
 				return
+			case "l":
+				if err := a.switchLang(); err != nil {
+					msg = err.Error()
+				}
 			case "\x1b[A", "k":
 				sel = max(sel-1, 0)
 			case "\x1b[B", "j":
@@ -430,7 +434,7 @@ func (a *app) popup() {
 
 // popupToggle toggles a pane as the toggle action does and returns the error to show, if any.
 func (a *app) popupToggle(r row) string {
-	fmt.Printf("\n\nToggling %s...", r.Name)
+	fmt.Printf("\n\n"+a.t("popup.toggling"), r.Name)
 	err := a.toggle(r.ID)
 	if err == nil {
 		err = a.start()
@@ -556,7 +560,7 @@ func (a *app) toggle(id string) error {
 		if p := panes[id]; p != nil {
 			delete(panes, id)
 			p.Status = "off"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(p)), a.postStopped(p))
+			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -569,7 +573,7 @@ func (a *app) toggle(id string) error {
 		names, _, _ := a.names()
 		p.Name = names[id]
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
-		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(p)); err != nil {
+		if p.RootID, err = a.createPost(a.dmID, "", a.rootMessage(p)); err != nil {
 			return err
 		}
 		panes[id] = p
@@ -611,7 +615,7 @@ func (a *app) event(name string, raw []byte) error {
 		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
-			return errors.Join(a.patchPost(p.RootID, rootMessage(p)), a.postStopped(p))
+			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p
@@ -642,7 +646,7 @@ func (a *app) sync(id string, p *pane) error {
 	}
 	var patchErr error
 	if p.Status != prev || p.Name != prevName {
-		patchErr = a.patchPost(p.RootID, rootMessage(p))
+		patchErr = a.patchPost(p.RootID, a.rootMessage(p))
 	}
 	return errors.Join(patchErr, a.postNews(id, p, info))
 }
@@ -706,7 +710,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			return err
 		}
 		if d := dialog(string(screen)); d != p.LastDialog {
-			msg := fmt.Sprintf("@%s ✋ **%s** is waiting on a dialog. Answer it on the machine:\n```\n%s\n```", a.user, p.Agent, truncate(d, maxPost-500))
+			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, truncate(d, maxPost-500))
 			if _, err := a.createPost(p.ChannelID, p.RootID, msg); err != nil {
 				return err
 			}
@@ -720,25 +724,25 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 
 var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
 
-func rootMessage(p *pane) string {
-	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], p.Status, bold(p.Name), p.Agent, baseName(p.Cwd))
+func (a *app) rootMessage(p *pane) string {
+	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], a.t(p.Status), bold(p.Name), p.Agent, baseName(p.Cwd))
 	switch p.Status {
 	case "off":
-		return head + "\n_Mirroring stopped._"
+		return head + "\n" + a.t("root.off")
 	case "closed":
-		return head + "\n_Pane closed, mirroring stopped._"
+		return head + "\n" + a.t("root.closed")
 	}
-	return head + "\n_Reply in this thread to prompt the agent._"
+	return head + "\n" + a.t("root.reply")
 }
 
 // postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
 // the root post is only edited, which notifies nobody.
 func (a *app) postStopped(p *pane) error {
-	what := "Mirroring stopped"
+	what := a.t("notice.off")
 	if p.Status == "closed" {
-		what = "Pane closed, mirroring stopped"
+		what = a.t("notice.closed")
 	}
-	msg := fmt.Sprintf("%s %s for %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
+	msg := fmt.Sprintf("%s %s %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
 		emoji[p.Status], what, bold(p.Name), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID)
 	_, err := a.createPost(p.ChannelID, "", msg)
 	return err

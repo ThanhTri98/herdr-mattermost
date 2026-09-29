@@ -155,6 +155,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	os.WriteFile(filepath.Join(herdrDir, "herdr"), []byte(fakeHerdr), 0o755)
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o755)
+	os.WriteFile(filepath.Join(state, "lang"), []byte("en\n"), 0o600) // most tests check the English texts
 	claude := filepath.Join(dir, "claude")
 	// Not the pane's cwd: Claude may have been started in another directory.
 	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
@@ -975,5 +976,47 @@ func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("q did not close the popup")
+	}
+}
+
+func TestCatalogComplete(t *testing.T) {
+	for key := range catalog["en"] {
+		if catalog["vi"][key] == "" {
+			t.Errorf("vi lacks %q", key)
+		}
+	}
+	for key := range catalog["vi"] {
+		if catalog["en"][key] == "" {
+			t.Errorf("en lacks %q", key)
+		}
+	}
+	for status := range emoji {
+		if catalog["en"][status] == "" {
+			t.Errorf("no text for status %q", status)
+		}
+	}
+}
+
+func TestLanguageSwitch(t *testing.T) {
+	e := newTestEnv(t)
+	os.Remove(filepath.Join(e.a.stateDir, "lang"))
+	e.setAgent(t, "blocked")
+	if err := e.a.toggle("w1:p1"); err != nil { // Vietnamese by default
+		t.Fatal(err)
+	}
+	if m := e.mm.snapshot()[0].Message; m != "✋ **đang chờ bạn** · claude · `my_proj.x`\n_Trả lời trong thread này để gửi lệnh cho agent._" {
+		t.Fatalf("vi root = %q", m)
+	}
+	if err := e.a.switchLang(); err != nil {
+		t.Fatal(err)
+	}
+	e.setAgent(t, "idle")
+	e.event(t, "pane.agent_status_changed", "w1:p1") // the next status update switches the root post
+	if m := e.mm.snapshot()[0].Message; m != "🟢 **idle** · claude · `my_proj.x`\n_Reply in this thread to prompt the agent._" {
+		t.Fatalf("en root = %q", m)
+	}
+	e.a.switchLang()
+	if got := e.a.topLevel("list"); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
+		t.Fatalf("vi list = %q", got)
 	}
 }
