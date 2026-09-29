@@ -20,6 +20,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -280,8 +282,22 @@ type pane struct {
 	Status     string `json:"status"`
 	Agent      string `json:"agent"`
 	Cwd        string `json:"cwd"`
-	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last posted
+	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
+	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
+}
+
+// recent is the last few thread replies typed into a pane, oldest first. panes.json written before
+// it was a list holds a single string.
+type recent []string
+
+func (r *recent) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*r = recent{s}
+		return nil
+	}
+	return json.Unmarshal(b, (*[]string)(r))
 }
 
 // withState runs fn on the mirrored panes under an exclusive file lock, then saves them. The lock
@@ -346,12 +362,12 @@ func (a *app) toggle(id string) error {
 			return err
 		}
 		p := &pane{ChannelID: a.dmID, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
-		_, p.LastReply, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
+		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
 		if p.RootID, err = a.createPost(a.dmID, "", rootMessage(id, p)); err != nil {
 			return err
 		}
 		panes[id] = p
-		return a.sync(id, p) // posts the dialog if the agent is already blocked
+		return a.sync(id, p)
 	})
 }
 
@@ -423,24 +439,38 @@ func (a *app) sync(id string, p *pane) error {
 }
 
 // postNews posts the agent's newest reply, or the dialog it is blocked on, into the pane's thread,
-// once each.
+// once each. A reply is posted only when its turn was prompted from the thread, and a dialog only when
+// the turn in effect is: one of the turn's prompts in the transcript is a recent text the daemon typed.
+// Turns typed in the terminal stay off Mattermost.
 func (a *app) postNews(id string, p *pane, info agentInfo) error {
 	switch p.Status {
 	case "idle", "done":
 		p.LastDialog = ""
 		// ponytail: trusts Claude to have written the final entry by the time herdr says idle;
 		// wait for the transcript to settle if replies ever come out one turn behind.
-		text, uuid, err := lastReply(a.transcript(info))
+		text, uuid, prompts, _, err := lastReply(a.transcript(info))
 		if err != nil {
 			return err
 		}
 		if uuid != "" && uuid != p.LastReply {
-			if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
-				return err
+			// ponytail: Prompted is kept after posting so a turn a background task resumes, which inherits
+			// the thread prompt, is posted too; a terminal prompt identical to a recent thread reply is
+			// posted as well. Clear it per turn if that ever bites. A resumed turn inherits the latest typed
+			// prompt, not the one that started the task, so a task started in the terminal that finishes
+			// after a thread reply is posted by mistake, and one started from the thread that finishes after
+			// a terminal prompt is kept off. Record which turn started each background task if that bites.
+			if p.fromThread(prompts) {
+				if _, err := a.createPost(p.ChannelID, p.RootID, text); err != nil {
+					return err
+				}
 			}
 			p.LastReply = uuid
 		}
 	case "blocked":
+		_, _, _, turn, err := lastReply(a.transcript(info))
+		if err != nil || !p.fromThread(turn) {
+			return err
+		}
 		screen, err := a.herdr("agent", "read", id, "--source", "detection")
 		if err != nil {
 			return err
@@ -554,16 +584,41 @@ func (a *app) transcript(info agentInfo) string {
 	return ""
 }
 
-// lastReply returns the text of the newest main-thread assistant message in a Claude transcript and
-// the uuid of its last entry. Claude writes one entry per content block, so text is gathered by
-// message id.
-func lastReply(path string) (text, uuid string, err error) {
+// fromThread reports whether one of a turn's prompts is a recent thread reply typed into the pane.
+func (p *pane) fromThread(turn []string) bool {
+	return slices.ContainsFunc(turn, func(s string) bool {
+		return strings.TrimSpace(s) != "" && slices.ContainsFunc(p.Prompted, func(q string) bool { return sameText(s, q) })
+	})
+}
+
+// sameText compares prompts ignoring whitespace differences typing may introduce.
+func sameText(a, b string) bool {
+	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
+}
+
+// pasteMarker matches the tags Claude wraps pasted text in when it records a prompt.
+var pasteMarker = regexp.MustCompile(`</?pasted_content id="[^"]*">`)
+
+// block is a content block of a transcript message.
+type block struct{ Type, Text string }
+
+// tag returns the text inside the first <name>...</name> in s.
+func tag(s, name string) string {
+	_, v, _ := strings.Cut(s, "<"+name+">")
+	v, _, _ = strings.Cut(v, "</"+name+">")
+	return v
+}
+
+// lastReply returns the text of the newest main-thread assistant message in a Claude transcript, the
+// uuid of its last entry, the prompts typed in its turn and those of the turn in effect at the end of
+// the transcript. Claude writes one entry per content block, so text is gathered by message id.
+func lastReply(path string) (text, uuid string, prompts, turn []string, err error) {
 	if path == "" {
-		return "", "", nil
+		return "", "", nil, nil, nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, nil, err
 	}
 	defer f.Close()
 	var msgID string
@@ -572,17 +627,47 @@ func lastReply(path string) (text, uuid string, err error) {
 	for {
 		line, readErr := r.ReadBytes('\n')
 		var e struct {
-			Type        string
-			IsSidechain bool
-			UUID        string
-			Message     struct {
+			Type             string
+			IsSidechain      bool
+			IsMeta           bool
+			IsCompactSummary bool
+			Origin           struct{ Kind string }
+			UUID             string
+			Attachment       struct{ CommandMode, Prompt string }
+			Message          struct {
 				ID      string
-				Content []struct{ Type, Text string }
+				Content json.RawMessage
 			}
 		}
+		// A typed prompt starts a turn as a user entry whose content is a string or blocks without a
+		// tool_result (compaction summaries and task notifications are not typed); a prompt typed while
+		// the agent works is queued into the running turn as an attachment.
+		if bytes.Contains(line, []byte(`"user"`)) && json.Unmarshal(line, &e) == nil && e.Type == "user" && !e.IsSidechain && !e.IsMeta && !e.IsCompactSummary && e.Origin.Kind != "task-notification" {
+			var s string
+			var blocks []block
+			if json.Unmarshal(e.Message.Content, &s) == nil {
+				if name := tag(s, "command-name"); strings.HasPrefix(s, "<command-") && name != "" {
+					s = name + " " + tag(s, "command-args") // a slash command is recorded as tags
+				}
+				turn = []string{pasteMarker.ReplaceAllString(s, "")}
+			} else if json.Unmarshal(e.Message.Content, &blocks) == nil && !slices.ContainsFunc(blocks, func(b block) bool { return b.Type == "tool_result" }) {
+				var t []string // a prompt with a pasted image is recorded as blocks
+				for _, b := range blocks {
+					if b.Type == "text" {
+						t = append(t, b.Text)
+					}
+				}
+				turn = []string{strings.Join(t, "\n")}
+			}
+		}
+		if bytes.Contains(line, []byte(`"queued_command"`)) && json.Unmarshal(line, &e) == nil && e.Attachment.CommandMode == "prompt" && !e.IsSidechain {
+			turn = append(turn, e.Attachment.Prompt)
+		}
 		if bytes.Contains(line, []byte(`"assistant"`)) && json.Unmarshal(line, &e) == nil && e.Type == "assistant" && !e.IsSidechain {
+			var content []block
+			json.Unmarshal(e.Message.Content, &content)
 			var t []string
-			for _, c := range e.Message.Content {
+			for _, c := range content {
 				if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
 					t = append(t, c.Text)
 				}
@@ -591,14 +676,14 @@ func lastReply(path string) (text, uuid string, err error) {
 				if e.Message.ID != msgID {
 					msgID, texts = e.Message.ID, nil
 				}
-				texts, uuid = append(texts, t...), e.UUID
+				texts, uuid, prompts = append(texts, t...), e.UUID, turn
 			}
 		}
 		if readErr == io.EOF {
-			return strings.Join(texts, "\n\n"), uuid, nil
+			return strings.Join(texts, "\n\n"), uuid, prompts, turn, nil
 		}
 		if readErr != nil {
-			return "", "", readErr
+			return "", "", nil, nil, readErr
 		}
 	}
 }

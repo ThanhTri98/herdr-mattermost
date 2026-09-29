@@ -177,6 +177,11 @@ func assistant(uuid, msgID, blockType, text string, sidechain bool) string {
 	return string(b)
 }
 
+func typed(uuid, text string) string {
+	b, _ := json.Marshal(map[string]any{"type": "user", "uuid": uuid, "message": map[string]any{"role": "user", "content": text}})
+	return string(b)
+}
+
 func (e *testEnv) event(t *testing.T, name, pane string) {
 	t.Helper()
 	raw := fmt.Sprintf(`{"event":%q,"data":{"pane_id":%q,"workspace_id":"w1","agent_status":"idle"}}`, strings.ReplaceAll(name, ".", "_"), pane)
@@ -209,7 +214,27 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("root post should be edited to working in place: %+v", posts)
 	}
 
+	e.appendTranscript(t, typed("t1", "typed in the terminal"), assistant("t2", "mt", "text", "terminal answer", false))
+	e.setAgent(t, "idle")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts = e.mm.snapshot(); len(posts) != 1 || !strings.Contains(posts[0].Message, "idle") {
+		t.Fatalf("a turn typed in the terminal must not be posted: %+v", posts)
+	}
+
+	screen := "❯ earlier conversation\n\n" + strings.Repeat("─", 40) + "\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n"
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(screen), 0o644)
+	e.appendTranscript(t, typed("t3", "clean the build"), assistant("t4", "mb", "tool_use", "", false))
+	e.setAgent(t, "blocked")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts = e.mm.snapshot(); len(posts) != 1 || !strings.Contains(posts[0].Message, "blocked") {
+		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
+	}
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "fix the\nbug", CreateAt: 100}))
+	e.setAgent(t, "working")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.appendTranscript(t,
+		typed("u1", "fix the\nbug"),
 		assistant("u2", "m2", "text", "Let me look.", false),
 		assistant("u3", "m2", "tool_use", "", false),
 		`{"type":"user","uuid":"u4","message":{"role":"user","content":[{"type":"tool_result","content":"`+strings.Repeat("x", 100000)+`"}]}}`,
@@ -221,23 +246,21 @@ func TestStatusToPostFlow(t *testing.T) {
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.event(t, "pane.agent_status_changed", "w1:p1") // a late duplicate hook must not repost
 	posts = e.mm.snapshot()
-	if len(posts) != 2 || !strings.Contains(posts[0].Message, "done") {
-		t.Fatalf("want root edited to done plus one reply, got %+v", posts)
+	if len(posts) != 3 || !strings.Contains(posts[0].Message, "done") || !strings.Contains(posts[1].Message, "Received") {
+		t.Fatalf("want root edited to done, the acknowledgement and one reply, got %+v", posts)
 	}
-	if posts[1].RootID != posts[0].ID || posts[1].Message != "Final answer.\n\nSecond block." {
-		t.Fatalf("reply = %+v", posts[1])
+	if posts[2].RootID != posts[0].ID || posts[2].Message != "Final answer.\n\nSecond block." {
+		t.Fatalf("reply = %+v", posts[2])
 	}
 
 	e.setAgent(t, "blocked")
-	screen := "❯ earlier conversation\n\n" + strings.Repeat("─", 40) + "\n Bash command\n\n   rm -rf build\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n"
-	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(screen), 0o644)
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if len(posts) != 3 {
+	if len(posts) != 4 {
 		t.Fatalf("want one dialog post, got %+v", posts)
 	}
-	d := posts[2]
+	d := posts[3]
 	if d.RootID != posts[0].ID || !strings.HasPrefix(d.Message, "@alice") || !strings.Contains(d.Message, "Do you want to proceed?") || strings.Contains(d.Message, "earlier conversation") {
 		t.Fatalf("dialog post = %q", d.Message)
 	}
@@ -247,7 +270,7 @@ func TestStatusToPostFlow(t *testing.T) {
 	}
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if len(posts) != 3 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
+	if len(posts) != 4 || !strings.Contains(posts[0].Message, "Mirroring stopped") {
 		t.Fatalf("unshare should only mark the root post: %+v", posts)
 	}
 }
@@ -261,7 +284,14 @@ func TestReplyPostedWhenRootEditFails(t *testing.T) {
 	e.mm.mu.Lock()
 	e.mm.failPatch = true
 	e.mm.mu.Unlock()
-	e.appendTranscript(t, assistant("u1", "m1", "text", "Done.", false))
+	path := filepath.Join(e.a.stateDir, "panes.json")
+	var state map[string]map[string]any
+	b, _ := os.ReadFile(path)
+	json.Unmarshal(b, &state)
+	state["w1:p1"]["prompted"] = "go" // a single reply, as saved before prompted became a list
+	b, _ = json.Marshal(state)
+	os.WriteFile(path, b, 0o600)
+	e.appendTranscript(t, typed("u0", "go"), assistant("u1", "m1", "text", "Done.", false))
 	e.setAgent(t, "done")
 	if err := e.a.event("pane.agent_status_changed", []byte(`{"data":{"pane_id":"w1:p1"}}`)); err == nil || !strings.Contains(err.Error(), "edit time limit") {
 		t.Fatalf("event = %v, want the edit error", err)
@@ -309,14 +339,119 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 	})
 }
 
+// TestThreadPromptTranscriptShapes posts the reply to a thread prompt however Claude records it.
+func TestThreadPromptTranscriptShapes(t *testing.T) {
+	queued := func(prompt, mode string) string {
+		b, _ := json.Marshal(map[string]any{"type": "attachment", "uuid": "q-" + prompt, "attachment": map[string]string{"type": "queued_command", "commandMode": mode, "prompt": prompt}})
+		return string(b)
+	}
+	for name, c := range map[string]struct {
+		sent  []string
+		lines []string
+	}{
+		"follow-up queued into the running turn": {[]string{"fix it", "and the docs"},
+			[]string{typed("t1", "fix it"), assistant("t2", "m1", "text", "Looking.", false), queued("and the docs", "prompt"), queued("<task-notification>x</task-notification>", "task-notification")}},
+		"thread reply queued into a terminal turn": {[]string{"and the docs"},
+			[]string{typed("t1", "typed in the terminal"), assistant("t2", "m1", "text", "Looking.", false), queued("and the docs", "prompt")}},
+		"compaction summary mid-turn": {[]string{"fix it"},
+			[]string{typed("t1", "fix it"), `{"type":"user","uuid":"t2","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}`}},
+		"task notification mid-turn": {[]string{"fix it"},
+			[]string{typed("t1", "fix it"), `{"type":"user","uuid":"t2","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>x</task-notification>"}}`}},
+		"prompt mentioning a command tag": {[]string{"sao <command-name> không khớp?"},
+			[]string{typed("t1", "sao <command-name> không khớp?")}},
+		"pasted text": {[]string{"look at this\nline one\nline two"},
+			[]string{typed("t1", "look at this\n\n<pasted_content id=\"c737\">\nline one\nline two\n</pasted_content id=\"c737\">\n")}},
+		"slash command": {[]string{"/review  foo"},
+			[]string{typed("t1", "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>foo</command-args>"),
+				`{"type":"user","uuid":"t2","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"skill body"}]}}`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			e.setAgent(t, "working")
+			if err := e.a.toggle("w1:p1"); err != nil {
+				t.Fatal(err)
+			}
+			root := e.mm.snapshot()[0].ID
+			for i, m := range c.sent {
+				e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: m, CreateAt: int64(100 + i)}))
+			}
+			e.appendTranscript(t, append(c.lines, assistant("r1", "m9", "text", "All done.", false))...)
+			e.setAgent(t, "idle")
+			e.event(t, "pane.agent_status_changed", "w1:p1")
+			if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "All done." || posts[len(posts)-1].RootID != root {
+				t.Fatalf("the reply to a thread prompt must be posted: %+v", posts)
+			}
+		})
+	}
+}
+
+// TestPromptedFollowsThread posts turns resumed by a background task and every recent thread reply's
+// turn, and keeps a failed prompt or a terminal prompt with an image from taking over the thread's.
+func TestPromptedFollowsThread(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "working")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	root := e.mm.snapshot()[0].ID
+	idle := func(want string) {
+		t.Helper()
+		e.setAgent(t, "idle")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		e.setAgent(t, "working")
+		e.event(t, "pane.agent_status_changed", "w1:p1")
+		if posts := e.mm.snapshot(); posts[len(posts)-1].Message != want {
+			t.Fatalf("last post = %q, want %q: %+v", posts[len(posts)-1].Message, want, posts)
+		}
+	}
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "run the tests", CreateAt: 100}))
+	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "yes", CreateAt: 101}))
+	os.Remove(filepath.Join(e.herdrDir, "blocked"))
+	e.appendTranscript(t, typed("t1", "run the tests"), assistant("t2", "m1", "text", "Started them in the background.", false))
+	idle("Started them in the background.")
+
+	e.appendTranscript(t, `{"type":"user","uuid":"t3","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>done</task-notification>"}}`,
+		assistant("t4", "m2", "text", "All tests pass.", false))
+	idle("All tests pass.")
+
+	e.appendTranscript(t, typed("t5", "yes"), assistant("t6", "m3", "text", "terminal answer", false))
+	idle("All tests pass.")
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "check the logs", CreateAt: 102}))
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "and the config", CreateAt: 103}))
+	e.appendTranscript(t, typed("t7", "check the logs"), assistant("t8", "m4", "text", "Logs are clean.", false))
+	idle("Logs are clean.")
+	e.appendTranscript(t, typed("t9", "and the config"), assistant("t10", "m5", "text", "Config is fine.", false))
+	idle("Config is fine.")
+
+	e.appendTranscript(t, `{"type":"user","uuid":"t11","imagePasteIds":[1],"message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}},{"type":"text","text":"why does this fail?"}]}}`,
+		assistant("t12", "m6", "text", "It fails because of the image.", false))
+	idle("Config is fine.")
+
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "queued from the thread", CreateAt: 104}))
+	e.appendTranscript(t, typed("t13", "typed in the terminal"), assistant("t14", "m7", "text", "terminal answer", false), typed("t15", "queued from the thread"))
+	idle("📥 Received - the agent is working on it.")
+	e.appendTranscript(t, assistant("t16", "m8", "text", "Thread answer.", false))
+	idle("Thread answer.")
+
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.txt"), []byte(strings.Repeat("─", 40)+"\n Do you want to proceed?\n ❯ 1. Yes\n"), 0o644)
+	e.appendTranscript(t, typed("t17", "clean the build"), assistant("t18", "m9", "tool_use", "", false))
+	e.setAgent(t, "blocked")
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "Thread answer." {
+		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
+	}
+}
+
 func TestLastReplyAndTruncate(t *testing.T) {
-	if text, uuid, err := lastReply(""); text != "" || uuid != "" || err != nil {
-		t.Fatalf("no transcript: %q %q %v", text, uuid, err)
+	if text, uuid, prompts, turn, err := lastReply(""); text != "" || uuid != "" || prompts != nil || turn != nil || err != nil {
+		t.Fatalf("no transcript: %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	e := newTestEnv(t)
-	e.appendTranscript(t, `{"type":"user","message":{"content":"a plain string"}}`, assistant("u1", "m1", "text", "hi", false), "not json")
-	if text, uuid, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || err != nil {
-		t.Fatalf("got %q %q %v", text, uuid, err)
+	e.appendTranscript(t, `{"type":"user","message":{"content":"a plain string"}}`, assistant("u1", "m1", "text", "hi", false), "not json", typed("u2", "next"))
+	if text, uuid, prompts, turn, err := lastReply(e.transcript); text != "hi" || uuid != "u1" || len(prompts) != 1 || prompts[0] != "a plain string" || len(turn) != 1 || turn[0] != "next" || err != nil {
+		t.Fatalf("got %q %q %q %q %v", text, uuid, prompts, turn, err)
 	}
 	long := strings.Repeat("é", maxPost+10)
 	if got := truncate(long, maxPost); len([]rune(got)) != maxPost || !strings.HasSuffix(got, "(truncated)") {
