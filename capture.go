@@ -80,12 +80,16 @@ func (a *app) settledScreen(id string) (screen []byte, settled bool, err error) 
 		if err != nil {
 			return nil, false, err
 		}
+		// A blocked agent waits on the user, so its screen is final even though Claude blinks the
+		// pending tool's bullet while a dialog is open.
+		info, infoErr := a.agent(id)
+		if infoErr == nil && info.Status == "blocked" {
+			return s, true, nil
+		}
 		if !bytes.Equal(s, screen) {
 			screen, since = s, time.Now()
-		} else if time.Since(since) >= captureSettle {
-			if info, err := a.agent(id); err != nil || info.Status != "working" {
-				return screen, true, nil
-			}
+		} else if time.Since(since) >= captureSettle && (infoErr != nil || info.Status != "working") {
+			return screen, true, nil
 		}
 		if time.Now().After(deadline) {
 			return screen, false, nil

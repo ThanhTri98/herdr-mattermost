@@ -191,3 +191,21 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 		t.Fatalf("timed-out posts = %+v", posts)
 	}
 }
+
+func TestCaptureBlockedIsImmediate(t *testing.T) {
+	if _, err := loadFonts(); err != nil {
+		t.Skip(err)
+	}
+	fastCapture(t)
+	captureSettle, captureTimeout = time.Minute, time.Minute // a stability wait would hang the test
+	e := mirroredEnv(t)
+	e.setAgent(t, "blocked")
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("Do you want to proceed?\r\n"), 0o644)
+
+	start := time.Now()
+	e.a.capture("root1")
+	posts := e.mm.snapshot()
+	if len(posts) != 1 || len(posts[0].FileIDs) != 1 || strings.Contains(posts[0].Message, "still changing") || time.Since(start) > 5*time.Second {
+		t.Fatalf("blocked capture took %s: %+v", time.Since(start), posts)
+	}
+}
