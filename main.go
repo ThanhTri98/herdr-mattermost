@@ -530,10 +530,7 @@ func (a *app) toggle(id string) error {
 		if p := panes[id]; p != nil {
 			delete(panes, id)
 			p.Status = "off"
-			if err := a.patchPost(p.RootID, rootMessage(id, p)); err != nil {
-				return err
-			}
-			return a.postStopped(id, p)
+			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
 		}
 		if err := a.connect(); err != nil {
 			return err
@@ -586,10 +583,7 @@ func (a *app) event(name string, raw []byte) error {
 		case "pane_closed":
 			delete(panes, id)
 			p.Status = "closed"
-			if err := a.patchPost(p.RootID, rootMessage(id, p)); err != nil {
-				return err
-			}
-			return a.postStopped(id, p)
+			return errors.Join(a.patchPost(p.RootID, rootMessage(id, p)), a.postStopped(id, p))
 		case "pane_moved":
 			delete(panes, oldID)
 			panes[id] = p

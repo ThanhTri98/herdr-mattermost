@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // TestMain runs the real main in a child process started with HERDR_MM_MAIN=1.
@@ -47,6 +49,13 @@ func (f *fakeMM) add(p post) {
 }
 
 func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/v4/websocket" { // reads the authentication challenge, then drops the connection
+		if conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil); err == nil {
+			conn.ReadMessage()
+			conn.Close()
+		}
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Header.Get("Authorization") != "Bearer tok" {
@@ -353,6 +362,31 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 	})
 }
 
+func TestStopNoticePostedWhenRootEditFails(t *testing.T) {
+	for _, stop := range []string{"toggle", "pane.closed"} {
+		e := newTestEnv(t)
+		e.setAgent(t, "idle")
+		if err := e.a.toggle("w1:p1"); err != nil {
+			t.Fatal(err)
+		}
+		e.mm.mu.Lock()
+		e.mm.failPatch = true
+		e.mm.mu.Unlock()
+		var err error
+		if stop == "toggle" {
+			err = e.a.toggle("w1:p1")
+		} else {
+			err = e.a.event(stop, []byte(`{"data":{"pane_id":"w1:p1"}}`))
+		}
+		if err == nil || !strings.Contains(err.Error(), "edit time limit") {
+			t.Fatalf("%s = %v, want the edit error", stop, err)
+		}
+		if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].RootID != "" || !strings.Contains(posts[1].Message, "topped for pane `w1:p1`") {
+			t.Fatalf("%s: the stop notice must be posted even when the root edit fails: %+v", stop, posts)
+		}
+	}
+}
+
 // TestThreadPromptTranscriptShapes posts the reply to a thread prompt however Claude records it.
 func TestThreadPromptTranscriptShapes(t *testing.T) {
 	queued := func(prompt, mode string) string {
@@ -583,12 +617,21 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	}
 }
 
-func TestConnectedMessage(t *testing.T) {
-	if got := connectedMessage(false); got != "🔌 Connected: the herdr-mm daemon started." {
-		t.Fatalf("start = %q", got)
+func TestConnectAnnounced(t *testing.T) {
+	e := mirroredEnv(t)
+	for range 2 {
+		if err := e.a.listenOnce(); err == nil {
+			t.Fatal("listenOnce returned without the connection dropping")
+		}
 	}
-	if got := connectedMessage(true); got != "🔌 Reconnected after the connection dropped." {
-		t.Fatalf("reconnect = %q", got)
+	var got []string
+	for _, p := range e.mm.snapshot() {
+		if p.ChannelID == "dm" && p.RootID == "" {
+			got = append(got, p.Message)
+		}
+	}
+	if want := []string{"🔌 Connected: the herdr-mm daemon started.", "🔌 Reconnected after the connection dropped."}; !slices.Equal(got, want) {
+		t.Fatalf("DM posts = %q, want %q", got, want)
 	}
 }
 
