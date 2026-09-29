@@ -74,7 +74,11 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "GET" && path == "/users/me":
-		fmt.Fprint(w, `{"id":"bot"}`)
+		fmt.Fprint(w, `{"id":"bot","username":"herdr"}`)
+	case r.Method == "GET" && path == "/users/me/teams":
+		fmt.Fprint(w, `[{"id":"t1","display_name":"Team"}]`)
+	case r.Method == "GET" && path == "/users/me/teams/t1/channels":
+		fmt.Fprint(w, `[{"id":"dm","type":"D","display_name":"alice"},{"id":"ch2","type":"P","display_name":"Ops"},{"id":"ch1","type":"O","display_name":"Dev"}]`)
 	case r.Method == "GET" && path == "/users/username/alice":
 		fmt.Fprint(w, `{"id":"alice-id"}`)
 	case r.Method == "POST" && path == "/channels/direct":
@@ -95,15 +99,23 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(file)
 		f.files = append(f.files, r.FormValue("channel_id")+"|"+h.Filename+"|"+string(b))
 		fmt.Fprintf(w, `{"file_infos":[{"id":"file%d"}]}`, len(f.files))
-	case r.Method == "GET" && path == "/channels/dm/posts":
+	case r.Method == "GET" && strings.HasPrefix(path, "/channels/") && strings.HasSuffix(path, "/posts"):
 		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 		list := map[string]map[string]*post{"posts": {}}
 		for _, p := range f.posts {
-			if p.ChannelID == "dm" && p.CreateAt > since {
+			if "/channels/"+p.ChannelID+"/posts" == path && p.CreateAt > since {
 				list["posts"][p.ID] = p
 			}
 		}
 		json.NewEncoder(w).Encode(list)
+	case r.Method == "GET" && strings.HasPrefix(path, "/posts/"):
+		for _, p := range f.posts {
+			if "/posts/"+p.ID == path {
+				json.NewEncoder(w).Encode(p)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	case r.Method == "PUT" && strings.HasSuffix(path, "/patch") && f.failPatch:
 		http.Error(w, `{"message":"edit time limit"}`, http.StatusInternalServerError)
 	case r.Method == "PUT" && strings.HasSuffix(path, "/patch"):
@@ -630,7 +642,7 @@ func posted(p post) []byte {
 
 func mirroredEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
-	e.a.botID, e.a.userID, e.a.dmID = "bot", "alice-id", "dm"
+	e.a.botID, e.a.botName, e.a.userID, e.a.dmID = "bot", "herdr", "alice-id", "dm"
 	e.a.withState(func(panes map[string]*pane) error {
 		panes["w1:p1"] = &pane{RootID: "root1", ChannelID: "dm", Status: "idle", Agent: "claude", Cwd: "/work/proj"}
 		return nil
@@ -823,7 +835,7 @@ func TestStopEndsDaemon(t *testing.T) {
 func TestConfigErrors(t *testing.T) {
 	e := newTestEnv(t)
 	e.a.token, e.a.user = "", ""
-	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN, MM_USER in") {
+	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN, MM_USER: set it with s in the Mattermost status popup, or in ") {
 		t.Fatalf("requireMM = %v", err)
 	}
 	e.a.token, e.a.user = "wrong", "alice"
@@ -1101,11 +1113,53 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("vi truncate = %q", got)
 	}
 	e.a.token = ""
-	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN trong "+e.a.envPath {
+	if got := e.a.popupToggle(row{ID: "w1:p1", Name: "web"}); got != "Không bật/tắt được web: thiếu MM_BOT_TOKEN: nhập bằng phím s trong popup trạng thái Mattermost, hoặc trong "+e.a.envPath {
 		t.Fatalf("vi toggle failure = %q", got)
 	}
 	e.a.token = "wrong"
 	if err := e.a.connect(); err == nil || !strings.HasPrefix(err.Error(), "đăng nhập Mattermost thất bại") {
 		t.Fatalf("vi connect = %v", err)
+	}
+}
+
+func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	root := e.mm.snapshot()[0].ID
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "late one", CreateAt: 100}))
+	e.appendTranscript(t, typed("u1", "late one"))
+	go func() { // Claude writes the final entry just after herdr reports idle
+		time.Sleep(300 * time.Millisecond)
+		e.appendTranscript(t, assistant("u2", "m1", "text", "Written late.", false))
+	}()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	posts := e.mm.snapshot()
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Written late." {
+		t.Fatalf("the reply must be posted for its own turn: %+v", posts)
+	}
+
+	// Text written before a tool call is not the answer while the turn still ends in the tool step.
+	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "fix the bug", CreateAt: 101}))
+	e.appendTranscript(t, typed("u3", "fix the bug"), assistant("u4", "m2", "text", "Let me look.", false), assistant("u5", "m2", "tool_use", "", false),
+		`{"type":"user","uuid":"u6","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}`)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		e.appendTranscript(t, assistant("u7", "m3", "text", "Fixed.", false))
+	}()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	posts = e.mm.snapshot()
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Fixed." || slices.ContainsFunc(posts, func(p post) bool { return p.Message == "Let me look." }) {
+		t.Fatalf("the final text must be posted as the reply: %+v", posts)
+	}
+
+	// A turn typed in the terminal is never waited for.
+	e.appendTranscript(t, typed("u8", "typed in the terminal"))
+	start := time.Now()
+	e.event(t, "pane.agent_status_changed", "w1:p1")
+	if d := time.Since(start); d > transcriptSettle/2 {
+		t.Fatalf("a terminal turn waited %s", d)
 	}
 }
