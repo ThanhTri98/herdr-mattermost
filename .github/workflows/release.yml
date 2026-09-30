@@ -1,0 +1,30 @@
+# Publishes prebuilt herdr-mm binaries for each commit on main, which
+# build.sh downloads when the installing machine has no Go 1.25+.
+name: release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir dist
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              GOOS=$os GOARCH=$arch go build -trimpath -o "dist/herdr-mm-$os-$arch" .
+            done
+          done
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "build-$GITHUB_SHA" dist/* --target "$GITHUB_SHA" --title "build $GITHUB_SHA" --notes "Prebuilt herdr-mm for commit $GITHUB_SHA."
