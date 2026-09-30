@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -262,10 +263,13 @@ func (a *app) targetName(t target) string {
 	return "# " + t.Name
 }
 
+// keyboard reads the popup's keys, shared by its screens so none loses keys another has buffered.
+var keyboard = bufio.NewReader(os.Stdin)
+
 // readKeys reads the next keys typed; keys typed quickly arrive in one read. A lone Esc is "\x1b".
 func readKeys() ([]string, error) {
 	b := make([]byte, 16)
-	n, err := os.Stdin.Read(b)
+	n, err := keyboard.Read(b)
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +412,7 @@ func (a *app) pickTarget(r row, mirror bool) string {
 					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 				}
 				if opts[sel].ID != "" {
-					if msg := a.whitelistScreen(opts[sel]); msg != a.t("whitelist.saved") {
+					if msg := a.whitelistScreen(opts[sel]); msg != "" && msg != a.t("whitelist.saved") {
 						return msg // linked, but the whitelist was not saved: not mirrored yet
 					}
 				}

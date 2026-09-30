@@ -505,10 +505,10 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("picker = %q", picker)
 	}
 	stdin.Write([]byte("\r"))
-	if s := screen("comma or space separated: "); !strings.Contains(s, "Linking api to # Dev...") || !strings.Contains(s, "Whitelist of # Dev") || strings.Contains(s, "alice") {
-		t.Fatalf("whitelist prompt after the pick = %q", s)
+	if s := screen("> alice\x1b7\x1b8"); !strings.Contains(s, "Linking api to # Dev...") || !strings.Contains(s, "Whitelist of # Dev") || !strings.Contains(s, "Esc: back.") {
+		t.Fatalf("whitelist prompt after the pick, prefilled with the current list = %q", s)
 	}
-	stdin.Write([]byte("@Bob, carol bob\n"))
+	stdin.Write([]byte(strings.Repeat("\x7f", 5) + "@Bob, carol bob\r"))
 	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
 		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
 	})
@@ -519,8 +519,14 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("saved whitelist = %+v", lists)
 	}
 	stdin.Write([]byte("w"))
-	screen("Whitelist of # Dev, the Mattermost usernames the bot obeys there, comma or space separated: ")
-	stdin.Write([]byte("-\n"))
+	screen("Whitelist of # Dev, the Mattermost usernames the bot obeys there, comma or space separated.\nEnter: save (an empty line empties it), Esc: back.\n\n> bob, carol\x1b7\x1b8")
+	stdin.Write([]byte("\x7f\x1b"))
+	if s := screen("q or Esc: close"); strings.Contains(s, "Whitelist saved.") || !strings.Contains(s, "Whitelist: bob, carol\n") {
+		t.Fatalf("popup after Esc on the whitelist = %q", s)
+	}
+	stdin.Write([]byte("w"))
+	screen("> bob, carol\x1b7\x1b8")
+	stdin.Write([]byte(strings.Repeat("\x7f", 10) + "\r"))
 	if s := screen("q or Esc: close"); !strings.Contains(s, "Whitelist saved.") || !regexp.MustCompile(`# Dev +empty\n`).MatchString(s) {
 		t.Fatalf("popup after emptying the whitelist = %q", s)
 	}

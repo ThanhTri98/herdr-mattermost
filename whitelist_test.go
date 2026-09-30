@@ -2,42 +2,73 @@ package main
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 func TestWhitelistEdit(t *testing.T) {
 	e := newTestEnv(t)
 	dev, ops := target{ID: "ch1", Name: "Dev"}, target{ID: "ch2", Name: "Ops", Private: true}
-	edit := func(ch target, answer string) (string, error) {
+	edit := func(ch target, keys string) (string, bool, error) {
 		var out strings.Builder
-		err := e.a.editWhitelist(bufio.NewReader(strings.NewReader(answer)), &out, ch)
-		return out.String(), err
+		saved, err := e.a.editWhitelist(bufio.NewReader(strings.NewReader(keys)), &out, ch)
+		return out.String(), saved, err
 	}
-	if out, err := edit(ops, "@Bob, carol  bob\n"); err != nil || !strings.Contains(out, "Whitelist of 🔒 Ops") || !strings.HasSuffix(out, "comma or space separated: ") {
-		t.Fatalf("edit = %q, %v", out, err)
+	if out, saved, err := edit(ops, "@Bob, carol  bob\r"); err != nil || !saved || !strings.Contains(out, "Whitelist of 🔒 Ops") || !strings.Contains(out, "Esc: back.\n\n> \x1b7\x1b8") {
+		t.Fatalf("edit = %q, %v, %v", out, saved, err)
 	}
-	if _, err := edit(ops, "carol dave, @eve\n"); err == nil || err.Error() != "unknown Mattermost user @dave, @eve, the whitelist was not saved" {
+	if out, saved, err := edit(ops, "\x1b"); err != nil || saved || !strings.HasSuffix(out, "> bob, carol\x1b7\x1b8") {
+		t.Fatalf("Esc = %q, %v, %v: the current list is prefilled and kept", out, saved, err)
+	}
+	if _, _, err := edit(ops, " dave, @eve\r"); err == nil || err.Error() != "unknown Mattermost user @dave, @eve, the whitelist was not saved" {
 		t.Fatalf("unknown users = %v", err)
 	}
-	if out, err := edit(ops, "\n"); err != nil || strings.Contains(out, "bob") {
-		t.Fatalf("Enter keeps the list: %q, %v", out, err)
-	}
-	lists, _ := e.a.readWhitelists()
-	if want := []member{{"bob-id", "bob"}, {"carol-id", "carol"}}; !slices.Equal(lists["ch2"], want) || !slices.Equal(lists["ch1"], []member{{"alice-id", "alice"}}) {
-		t.Fatalf("whitelists = %+v", lists)
-	}
-	if _, err := edit(dev, "-\n"); err != nil {
+	// "bob, carol": back 7 to after "bob", erase it, type alice, then to the end, clamped, and add bob.
+	if _, _, err := edit(ops, strings.Repeat("\x1b[D", 7)+"\x7f\x7f\x7falice"+strings.Repeat("\x1b[C", 20)+" bob\r"); err != nil {
 		t.Fatal(err)
 	}
-	if lists, _ = e.a.readWhitelists(); len(lists["ch1"]) != 0 || len(lists["ch2"]) != 2 {
-		t.Fatalf("- empties only its channel: %+v", lists)
+	lists, _ := e.a.readWhitelists()
+	if want := []member{{"alice-id", "alice"}, {"bob-id", "bob"}, {"carol-id", "carol"}}; !slices.Equal(lists["ch2"], want) || !slices.Equal(lists["ch1"], []member{{"alice-id", "alice"}}) {
+		t.Fatalf("whitelists = %+v", lists)
+	}
+	if _, _, err := edit(dev, strings.Repeat("\x7f", 5)+"\r"); err != nil {
+		t.Fatal(err)
+	}
+	if lists, _ = e.a.readWhitelists(); len(lists["ch1"]) != 0 || len(lists["ch2"]) != 3 {
+		t.Fatalf("an empty line empties only its channel: %+v", lists)
 	}
 	if got := usernames([]member{{"a", "a"}, {"b", "b"}, {"c", "c"}, {"d", "d"}, {"e", "e"}}, 3); got != "a, b, c +2" {
 		t.Fatalf("usernames = %q", got)
+	}
+}
+
+func TestReadLine(t *testing.T) {
+	// Left, é typed, Delete ignored, Right, Backspace, x typed, then Enter.
+	if line, ok, err := readLine(bufio.NewReader(strings.NewReader("\x1b[Dé\x1b[3~\x1b[C\x7fx\rnext")), io.Discard, "> ", "ab"); line != "aéx" || !ok || err != nil {
+		t.Fatalf("readLine = %q, %v, %v", line, ok, err)
+	}
+	if line, ok, err := readLine(bufio.NewReader(strings.NewReader("abc\x1b")), io.Discard, "> ", ""); line != "" || ok || err != nil {
+		t.Fatalf("Esc = %q, %v, %v", line, ok, err)
+	}
+}
+
+func TestEscAfterPick(t *testing.T) {
+	e := newTestEnv(t)
+	defer func(k *bufio.Reader) { keyboard = k }(keyboard)
+	// One byte per read, as typed: Enter picks Ops, the only free channel, then Esc leaves its whitelist.
+	keyboard = bufio.NewReader(iotest.OneByteReader(strings.NewReader("\r\x1b")))
+	if msg := e.a.pickTarget(row{ID: "w9:p1", Name: "new"}, false); msg != "" {
+		t.Fatalf("pick then Esc = %q, want no message", msg)
+	}
+	targets, _ := e.a.readTargets()
+	lists, _ := e.a.readWhitelists()
+	if targets["w9:p1"].ID != "ch2" || len(lists["ch2"]) != 0 || len(lists["ch1"]) != 1 {
+		t.Fatalf("the pick is kept and the whitelists unchanged: targets %+v, whitelists %+v", targets, lists)
 	}
 }
 
