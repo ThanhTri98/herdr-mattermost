@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,21 +118,45 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 }
 
 func TestConnectAnnounced(t *testing.T) {
+	defer func(f func() time.Time) { now = f }(now)
+	clock := time.Date(2026, 9, 30, 10, 0, 0, 0, time.Local)
+	now = func() time.Time { clock = clock.Add(90 * time.Second); return clock }
 	e := mirroredEnv(t)
 	for range 2 {
 		if err := e.a.listenOnce(); err == nil {
 			t.Fatal("listenOnce returned without the connection dropping")
 		}
 	}
-	var got []string
-	for _, p := range e.mm.snapshot() {
+	host, _ := os.Hostname()
+	posts := e.mm.snapshot()
+	if len(posts) != 2 {
+		t.Fatalf("posts = %+v", posts)
+	}
+	want := []struct{ color, title, fields string }{
+		{"#2eb67d", "🟢 herdr-mm connected", "Host=`" + host + "`|At=10:01:30 30/09/2026|Mirroring=1 pane(s)|"},
+		{"#ecb22e", "🟡 herdr-mm reconnected", "Host=`" + host + "`|Connection lost=10:03:00 → 10:04:30 (1m30s)|"},
+	}
+	for i, p := range posts {
 		if p.ChannelID != "ts" || p.RootID != "" {
 			t.Fatalf("a connect notice goes top-level into Town Square only: %+v", p)
 		}
-		got = append(got, p.Message)
+		if p.Message != want[i].title+" · `"+host+"`" {
+			t.Errorf("fallback message = %q", p.Message)
+		}
+		att := p.Props["attachments"].([]any)[0].(map[string]any)
+		fields := ""
+		for _, f := range att["fields"].([]any) {
+			f := f.(map[string]any)
+			fields += fmt.Sprint(f["title"], "=", f["value"], "|")
+		}
+		if att["color"] != want[i].color || att["title"] != want[i].title || fields != want[i].fields {
+			t.Errorf("attachment %d = %v, fields %q", i, att, fields)
+		}
 	}
-	if want := []string{"🔌 Connected: the herdr-mm daemon started.", "🔌 Reconnected after the connection dropped."}; !slices.Equal(got, want) {
-		t.Fatalf("Town Square posts = %q, want %q", got, want)
+	stop := e.a.stoppedNotice(time.Date(2026, 9, 30, 11, 0, 0, 0, time.Local))
+	att := stop.Props["attachments"].([]map[string]any)[0]
+	if att["color"] != "#e01e5a" || att["title"] != "🔴 herdr-mm stopped" || len(att["fields"].([]map[string]any)) != 2 {
+		t.Errorf("stopped = %v", att)
 	}
 }
 
