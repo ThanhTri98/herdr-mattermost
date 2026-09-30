@@ -65,7 +65,7 @@ func TestStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := out.String()
-	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "🟢 idle", "claude"} {
+	for _, want := range []string{"daemon: running (pid " + strconv.Itoa(os.Getpid()) + ")", "> ", "🟢 idle", "claude", "CONNECTION", "  Not connected  "} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("status = %q, want %q", s, want)
 		}

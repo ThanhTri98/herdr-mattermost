@@ -17,13 +17,13 @@ func TestWhitelistEdit(t *testing.T) {
 		err := e.a.editWhitelist(bufio.NewReader(strings.NewReader(answer)), &out, ch)
 		return out.String(), err
 	}
-	if out, err := edit(ops, "@Bob, carol  bob\n"); err != nil || !strings.Contains(out, "Whitelist of 🔒 Ops") || !strings.Contains(out, "[empty]") {
+	if out, err := edit(ops, "@Bob, carol  bob\n"); err != nil || !strings.Contains(out, "Whitelist of 🔒 Ops") || !strings.HasSuffix(out, "comma or space separated: ") {
 		t.Fatalf("edit = %q, %v", out, err)
 	}
 	if _, err := edit(ops, "carol dave, @eve\n"); err == nil || err.Error() != "unknown Mattermost user @dave, @eve, the whitelist was not saved" {
 		t.Fatalf("unknown users = %v", err)
 	}
-	if out, err := edit(ops, "\n"); err != nil || !strings.Contains(out, "[bob, carol]") {
+	if out, err := edit(ops, "\n"); err != nil || strings.Contains(out, "bob") {
 		t.Fatalf("Enter keeps the list: %q, %v", out, err)
 	}
 	lists, _ := e.a.readWhitelists()
@@ -50,8 +50,7 @@ func TestWhitelistControl(t *testing.T) {
 		return nil
 	})
 	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"id":"alice-id","username":"alice"}],"ch2":[{"id":"bob-id","username":"bob"}]}`), 0o600)
-	refused := "You are not allowed to control this agent: you are not on this channel's whitelist."
-	empty := catalog["en"]["channel.empty"]
+	refused := "You are not allowed to call me"
 	ack := catalog["en"]["prompt.received"]
 	for i, c := range []struct {
 		ch, user, msg, want string
@@ -62,8 +61,8 @@ func TestWhitelistControl(t *testing.T) {
 		{"ch2", "alice-id", "@herdr help", "@alice " + refused},
 		{"ch2", "alice-id", "@herdr #exec /clear", "@alice " + refused},
 		{"ch2", "alice-id", "@herdr #capture /context", "@alice " + refused},
-		{"ch3", "alice-id", "@herdr list", "@alice " + empty},
-		{"ch3", "ghost-id", "@herdr go", empty}, // the author cannot be looked up: no mention
+		{"ch3", "alice-id", "@herdr list", "@alice " + refused},
+		{"ch3", "ghost-id", "@herdr go", refused}, // the author cannot be looked up: no mention
 	} {
 		n := len(e.mm.snapshot())
 		e.a.handleEvent(posted(post{ID: "p" + string(rune('a'+i)), ChannelID: c.ch, UserID: c.user, Message: c.msg, CreateAt: int64(i + 1)}))

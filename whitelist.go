@@ -47,14 +47,13 @@ func (a *app) whitelist(channelID string) []member {
 	return lists[channelID]
 }
 
-// usernames lists a whitelist's usernames, the first max of them followed by how many more there are,
-// or all of them for max 0.
+// usernames lists a whitelist's usernames, the first max of them followed by how many more there are.
 func usernames(ms []member, max int) string {
 	var names []string
 	for _, m := range ms {
 		names = append(names, m.Username)
 	}
-	if max > 0 && len(names) > max {
+	if len(names) > max {
 		return strings.Join(names[:max], ", ") + fmt.Sprintf(" +%d", len(names)-max)
 	}
 	return strings.Join(names, ", ")
@@ -92,11 +91,7 @@ func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) error {
 	if err != nil {
 		return err
 	}
-	current := usernames(lists[t.ID], 0)
-	if current == "" {
-		current = a.t("whitelist.none")
-	}
-	fmt.Fprintf(w, a.t("whitelist.prompt"), a.targetName(t), current)
+	fmt.Fprintf(w, a.t("whitelist.prompt"), a.targetName(t))
 	line, err := r.ReadString('\n')
 	if err != nil && (line == "" || !errors.Is(err, io.EOF)) {
 		return err
@@ -133,11 +128,8 @@ func (a *app) whitelistScreen(t target) string {
 }
 
 // refusal answers someone not on the channel's whitelist who mentioned the bot, mentioning them.
-func (a *app) refusal(userID string, empty bool) string {
+func (a *app) refusal(userID string) string {
 	msg := a.t("channel.refused")
-	if empty {
-		msg = a.t("channel.empty")
-	}
 	var u struct{ Username string }
 	if err := a.api(http.MethodGet, "/users/"+url.PathEscape(userID), nil, &u); err != nil || u.Username == "" {
 		log.Printf("refusal: user %s: %v", userID, err)
