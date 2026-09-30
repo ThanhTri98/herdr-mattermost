@@ -324,9 +324,9 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 
 // handlePost obeys a post from MM_USER that @mentions the bot in a channel. In a channel linked to a
 // pane, the post, top-level or in any thread, prompts that pane and is answered in its thread; anyone
-// else who mentions the bot there is told only MM_USER is obeyed. In any channel, the mention followed by
-// "help" gets the command list and followed by "list" the mirrored panes. A direct message, dm, gets one
-// line saying the bot works only in channels. late marks a post sent while the WebSocket was down.
+// else who mentions the bot there is told only MM_USER is obeyed. There, the mention followed by "help"
+// gets the command list and followed by "list" the mirrored panes. A direct message, dm, gets one line
+// saying the bot works only in channels. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, dm, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
@@ -338,8 +338,7 @@ func (a *app) handlePost(p post, dm, late bool) error {
 		return nil // already handled, or deleted before it was caught up
 	}
 	text, mentioned := a.stripMention(p.Message)
-	command := strings.EqualFold(text, "help") || strings.EqualFold(text, "list")
-	if !dm && (!mentioned || (!command || p.UserID != a.userID) && !a.linked(p.ChannelID)) {
+	if !dm && (!mentioned || !a.linked(p.ChannelID)) {
 		return nil
 	}
 	root := cmp.Or(p.RootID, p.ID)

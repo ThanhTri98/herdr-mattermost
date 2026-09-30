@@ -13,7 +13,7 @@ The bot works only in channels. Link a pane to a channel the bot is in (see [Cha
 - `@herdr list` lists the mirrored panes and their statuses, with a link to each thread.
 - `@herdr help` gets the list of commands.
 
-`list` and `help` work in any channel the bot is in, linked to a pane or not; everything else only in a channel linked to a pane.
+All of these, `list` and `help` included, work only in a channel linked to a pane.
 
 Only the one Mattermost user named in `MM_USER` is obeyed, and only when they @mention the bot in a channel. Everyone else, the bot itself, and bot, webhook or system posts, such as a channel header change, are ignored, except that someone else who @mentions the bot in a linked channel is told who controls it. A direct message to the bot, from anyone, is not typed into any agent: the bot answers it with one line saying it only works in channels.
 

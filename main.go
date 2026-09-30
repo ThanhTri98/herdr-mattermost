@@ -652,7 +652,11 @@ func (a *app) pickTarget(r row, mirror bool) string {
 			case "\x1b[B", "j":
 				sel = min(sel+1, len(opts)-1)
 			case "\r", "\n", " ":
-				fmt.Printf("\n\n"+a.t("picker.linking"), r.Name, a.targetName(opts[sel]))
+				if opts[sel].ID == "" {
+					fmt.Printf("\n\n"+a.t("picker.unlinking"), r.Name)
+				} else {
+					fmt.Printf("\n\n"+a.t("picker.linking"), r.Name, a.targetName(opts[sel]))
+				}
 				if err := a.retarget(r.ID, opts[sel]); err != nil {
 					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 				}

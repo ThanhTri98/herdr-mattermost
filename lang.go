@@ -34,6 +34,7 @@ var catalog = map[string]map[string]string{
 		"dm.refused":       "Bot chỉ hoạt động trong kênh. Gắn một pane với kênh bằng phím t trong popup trạng thái Mattermost, rồi @mention bot trong kênh đó.",
 		"picker.hint":      "↑/↓ hoặc j/k để di chuyển, Enter để chọn, q hoặc Esc để huỷ.",
 		"picker.linking":   "Đang gắn %s với %s...",
+		"picker.unlinking": "Đang bỏ gắn kênh của %s...",
 		"settings.title":   "Cài đặt Mattermost. Nhấn Enter để giữ giá trị hiện tại.",
 		"settings.url":     "URL Mattermost [%s]: ",
 		"settings.token":   "Token của bot, không hiện khi gõ [%s]: ",
@@ -45,8 +46,8 @@ var catalog = map[string]map[string]string{
 			"- Nội dung bất kỳ: gửi lệnh cho agent của kênh.\n" +
 			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`.\n" +
 			"- `#exec /command`: gõ đúng lệnh vào pane, không chụp màn hình, ví dụ gọi một skill, `/clear`, `/compact`.\n" +
-			"- `list`: xem các pane đang đẩy lên Mattermost (dùng được ở mọi kênh bot đang ở).\n" +
-			"- `help`: hiện danh sách này (dùng được ở mọi kênh bot đang ở).\n\n" +
+			"- `list`: xem các pane đang đẩy lên Mattermost.\n" +
+			"- `help`: hiện danh sách này.\n\n" +
 			"Tin nhắn bắt đầu bằng `/` bị Mattermost hiểu là lệnh của nó, nên hãy dùng `#exec`.",
 		"exec.usage":     "Cách dùng: `#exec /command`, ví dụ `#exec /clear`.",
 		"list.none":      "Chưa có pane nào đẩy lên Mattermost. Mở popup trạng thái Mattermost, chọn một pane, nhấn t để chọn kênh rồi Enter để bắt đầu.",
@@ -90,6 +91,7 @@ var catalog = map[string]map[string]string{
 		"dm.refused":       "The bot only works in channels. Link a pane to a channel with t in the Mattermost status popup, then @mention the bot there.",
 		"picker.hint":      "↑/↓ or j/k to move, Enter to pick, q or Esc to cancel.",
 		"picker.linking":   "Linking %s to %s...",
+		"picker.unlinking": "Unlinking the channel of %s...",
 		"settings.title":   "Mattermost settings. Press Enter to keep the current value.",
 		"settings.url":     "Mattermost URL [%s]: ",
 		"settings.token":   "Bot token, hidden while typed [%s]: ",
@@ -101,8 +103,8 @@ var catalog = map[string]map[string]string{
 			"- Anything else: prompt the channel's agent.\n" +
 			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`.\n" +
 			"- `#exec /command`: type exactly the command into the pane, without a screenshot, for example a skill, `/clear`, `/compact`.\n" +
-			"- `list`: list the mirrored panes (in any channel the bot is in).\n" +
-			"- `help`: show this list (in any channel the bot is in).\n\n" +
+			"- `list`: list the mirrored panes.\n" +
+			"- `help`: show this list.\n\n" +
 			"A message starting with `/` is taken by Mattermost as its own slash command, so use `#exec`.",
 		"exec.usage":     "Usage: `#exec /command`, for example `#exec /clear`.",
 		"list.none":      "No panes are mirrored. Open the Mattermost status popup, select a pane, press t to pick its channel and Enter to mirror it.",

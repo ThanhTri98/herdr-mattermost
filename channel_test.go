@@ -226,11 +226,11 @@ func TestExecAndHelp(t *testing.T) {
 		{post{ID: "c4", ChannelID: "ch1", RootID: "root1", Message: "@herdr list"}, "ch1|root1|" + list},
 		{post{ID: "c5", ChannelID: "ch2", Message: "@herdr #exec /compact"}, "ch2|c5|" + ack},
 		{post{ID: "c6", ChannelID: "ch2", RootID: "c5", Message: "@herdr help"}, "ch2|c5|" + help},
-		{post{ID: "c7", ChannelID: "ch1", Message: "help"}, ""},                      // no mention in a channel: ignored
-		{post{ID: "c8", ChannelID: "ch3", Message: "@herdr help"}, "ch3|c8|" + help}, // help and list work in any channel
-		{post{ID: "c9", ChannelID: "ch3", RootID: "x", Message: "@herdr List"}, "ch3|x|" + list},
-		{post{ID: "c10", ChannelID: "ch3", Message: "@herdr fix it"}, ""},                 // no pane in ch3
-		{post{ID: "c11", ChannelID: "ch3", UserID: "bob-id", Message: "@herdr help"}, ""}, // only MM_USER outside linked channels
+		{post{ID: "c7", ChannelID: "ch1", Message: "help"}, ""},        // no mention in a channel: ignored
+		{post{ID: "c8", ChannelID: "ch3", Message: "@herdr help"}, ""}, // no pane in ch3: help and list too are ignored
+		{post{ID: "c9", ChannelID: "ch3", RootID: "x", Message: "@herdr List"}, ""},
+		{post{ID: "c10", ChannelID: "ch3", Message: "@herdr fix it"}, ""},
+		{post{ID: "c11", ChannelID: "ch3", UserID: "bob-id", Message: "@herdr help"}, ""},
 	} {
 		if c.p.UserID == "" {
 			c.p.UserID = "alice-id"
@@ -493,6 +493,7 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("picker = %q", picker)
 	}
 	stdin.Write([]byte("\r"))
+	screen("Linking api to # Dev...")
 	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
 		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
 	})
@@ -503,6 +504,9 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("picker of a linked pane = %q", picker)
 	}
 	stdin.Write([]byte("jj\r"))
+	if s := screen("Unlinking the channel of api..."); strings.Contains(s, "Linking api to") {
+		t.Fatalf("unlinking shows the linking line: %q", s)
+	}
 	wait("unlinking", func(panes map[string]*pane, targets map[string]target) bool {
 		return len(panes) == 0 && len(targets) == 0
 	})
