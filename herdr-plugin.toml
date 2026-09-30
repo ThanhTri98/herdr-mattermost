@@ -6,7 +6,7 @@ description = "Mirror agent panes into Mattermost channels and type @mentions of
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["go", "build", "-o", "herdr-mm", "."]
+command = ["sh", "./build.sh"]
 
 [[startup]]
 id = "daemon"
