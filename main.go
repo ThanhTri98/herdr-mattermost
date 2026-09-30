@@ -17,7 +17,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -149,18 +148,6 @@ func (a *app) daemon() error {
 		a.lastPost = n // otherwise catch-up starts at each pane's root post
 	}
 	log.Print("daemon started")
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-sig
-		done := make(chan struct{})
-		go func() { a.notice(a.stoppedNotice(now())); close(done) }()
-		select { // best effort: a dead connection must not hold up the stop
-		case <-done:
-		case <-time.After(5 * time.Second):
-		}
-		os.Exit(0)
-	}()
 	return a.listen()
 }
 

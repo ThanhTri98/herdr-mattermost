@@ -229,7 +229,7 @@ func (a *app) listenOnce() error {
 	if a.connected {
 		a.notice(a.reconnectedNotice(a.downAt, now()))
 	} else {
-		a.notice(a.startedNotice(now()))
+		a.notice(a.startedNotice())
 	}
 	a.connected = true
 	defer func() { a.downAt = now() }()
@@ -297,8 +297,8 @@ func (a *app) postsSince(channelID, rootID string) ([]post, error) {
 
 var now = time.Now // replaced by tests
 
-// noticePost builds a daemon notice: a colored attachment with a bold title and short fields, and a plain
-// message with the title and hostname for clients that do not render attachments.
+// noticePost builds a daemon notice: a colored attachment with a bold title and short fields, whose
+// fallback of title and hostname stands in for clients and notifications that do not render attachments.
 func (a *app) noticePost(color, titleKey string, fields ...string) post {
 	host, err := os.Hostname()
 	if err != nil {
@@ -309,26 +309,18 @@ func (a *app) noticePost(color, titleKey string, fields ...string) post {
 	for i := 0; i+1 < len(fields); i += 2 {
 		fs = append(fs, map[string]any{"title": a.t(fields[i]), "value": fields[i+1], "short": true})
 	}
-	return post{
-		Message: fmt.Sprintf("%s · `%s`", title, host),
-		Props:   map[string]any{"attachments": []map[string]any{{"color": color, "title": title, "fallback": title + " · " + host, "fields": fs}}},
-	}
+	return post{Props: map[string]any{"attachments": []map[string]any{{"color": color, "title": title, "fallback": title + " · " + host, "fields": fs}}}}
 }
 
-const stamp = "15:04:05 02/01/2006"
-
-func (a *app) startedNotice(at time.Time) post {
+func (a *app) startedNotice() post {
 	panes, _ := a.readPanes()
-	return a.noticePost("#2eb67d", "notice.started", "notice.at", at.Format(stamp), "notice.panes", fmt.Sprintf(a.t("notice.panecount"), len(panes)))
+	return a.noticePost("#2eb67d", "notice.started", "notice.panes", fmt.Sprintf(a.t("notice.panecount"), len(panes)))
 }
 
 func (a *app) reconnectedNotice(down, up time.Time) post {
+	const clock = "15:04:05 MST"
 	d := up.Sub(down).Round(time.Second)
-	return a.noticePost("#ecb22e", "notice.reconnected", "notice.down", fmt.Sprintf("%s → %s (%s)", down.Format("15:04:05"), up.Format("15:04:05"), d))
-}
-
-func (a *app) stoppedNotice(at time.Time) post {
-	return a.noticePost("#e01e5a", "notice.stopped", "notice.at", at.Format(stamp))
+	return a.noticePost("#ecb22e", "notice.reconnected", "notice.down", fmt.Sprintf("%s → %s (%s)", down.Format(clock), up.Format(clock), d))
 }
 
 func (a *app) handleEvent(raw []byte) error {

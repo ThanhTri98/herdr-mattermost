@@ -119,7 +119,7 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 
 func TestConnectAnnounced(t *testing.T) {
 	defer func(f func() time.Time) { now = f }(now)
-	clock := time.Date(2026, 9, 30, 10, 0, 0, 0, time.Local)
+	clock := time.Date(2026, 9, 30, 10, 0, 0, 0, time.FixedZone("ICT", 7*3600))
 	now = func() time.Time { clock = clock.Add(90 * time.Second); return clock }
 	e := mirroredEnv(t)
 	for range 2 {
@@ -133,17 +133,17 @@ func TestConnectAnnounced(t *testing.T) {
 		t.Fatalf("posts = %+v", posts)
 	}
 	want := []struct{ color, title, fields string }{
-		{"#2eb67d", "🟢 herdr-mm connected", "Host=`" + host + "`|At=10:01:30 30/09/2026|Mirroring=1 pane(s)|"},
-		{"#ecb22e", "🟡 herdr-mm reconnected", "Host=`" + host + "`|Connection lost=10:03:00 → 10:04:30 (1m30s)|"},
+		{"#2eb67d", "🟢 herdr-mm connected", "Host=`" + host + "`|Mirroring=1 pane(s)|"},
+		{"#ecb22e", "🟡 herdr-mm reconnected", "Host=`" + host + "`|Connection lost=10:01:30 ICT → 10:03:00 ICT (1m30s)|"},
 	}
 	for i, p := range posts {
 		if p.ChannelID != "ts" || p.RootID != "" {
 			t.Fatalf("a connect notice goes top-level into Town Square only: %+v", p)
 		}
-		if p.Message != want[i].title+" · `"+host+"`" {
-			t.Errorf("fallback message = %q", p.Message)
-		}
 		att := p.Props["attachments"].([]any)[0].(map[string]any)
+		if p.Message != "" || att["fallback"] != want[i].title+" · "+host {
+			t.Errorf("message = %q, fallback = %q", p.Message, att["fallback"])
+		}
 		fields := ""
 		for _, f := range att["fields"].([]any) {
 			f := f.(map[string]any)
@@ -152,11 +152,6 @@ func TestConnectAnnounced(t *testing.T) {
 		if att["color"] != want[i].color || att["title"] != want[i].title || fields != want[i].fields {
 			t.Errorf("attachment %d = %v, fields %q", i, att, fields)
 		}
-	}
-	stop := e.a.stoppedNotice(time.Date(2026, 9, 30, 11, 0, 0, 0, time.Local))
-	att := stop.Props["attachments"].([]map[string]any)[0]
-	if att["color"] != "#e01e5a" || att["title"] != "🔴 herdr-mm stopped" || len(att["fields"].([]map[string]any)) != 2 {
-		t.Errorf("stopped = %v", att)
 	}
 }
 
