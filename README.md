@@ -155,7 +155,7 @@ Not built yet:
 
 - Approving or answering dialogs from Mattermost (with `herdr agent send-keys`).
 - Reactions, and file attachments for output longer than one post.
-- Screenshots of the scrollback, or triggered by anything but a thread reply.
+- Screenshots of the scrollback, or triggered by anything but a `#capture` message.
 - Agents other than Claude Code.
 - Letting people other than `MM_USER` prompt an agent from a channel, a read-only mode for them, and `@all` or `@channel` as a mention of the bot.
 - In a channel, a turn is answered in the thread of the latest question, so a reply to an earlier question from another thread, still being worked on, lands in the newer thread.
