@@ -323,7 +323,8 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 // channel's whitelist. The post, top-level or in any thread, prompts that pane and is answered in its
 // thread; anyone else who mentions the bot there is told they are not allowed, and an empty whitelist
 // obeys nobody. There, the mention followed by "help" gets the command list and followed by "list" the
-// panes mirrored into that channel. A direct message, dm, gets one line saying the bot works only in channels. late marks a post sent while the WebSocket was down.
+// panes mirrored into that channel. A direct message, dm, gets one line saying the bot works only in
+// channels. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, dm, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
