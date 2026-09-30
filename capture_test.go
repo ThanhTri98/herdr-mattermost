@@ -159,7 +159,7 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 	e.setAgent(t, "idle")
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("\x1b[1mContext\x1b[0m ⛁ 12%\r\n"), 0o644)
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "#capture /context", CreateAt: 1}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr #capture /context", CreateAt: 1}))
 	if ack := e.waitPost(t, 1); ack.Message != "📥 Received - the agent is working on it." {
 		t.Fatalf("ack = %+v", ack)
 	}
@@ -167,13 +167,13 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 	if got := e.prompts(); got != "w1:p1|/context\n" {
 		t.Fatalf("typed %q, want the text after #capture", got)
 	}
-	if shot.RootID != "root1" || shot.ChannelID != "dm" || len(shot.FileIDs) != 1 || shot.FileIDs[0] != "file1" || !strings.Contains(shot.Message, "w1:p1") {
+	if shot.RootID != "root1" || shot.ChannelID != "ch1" || len(shot.FileIDs) != 1 || shot.FileIDs[0] != "file1" || !strings.Contains(shot.Message, "w1:p1") {
 		t.Fatalf("screenshot post = %+v", shot)
 	}
 	e.mm.mu.Lock()
 	files := e.mm.files
 	e.mm.mu.Unlock()
-	if len(files) != 1 || !strings.HasPrefix(files[0], "dm|screen.png|\x89PNG") {
+	if len(files) != 1 || !strings.HasPrefix(files[0], "ch1|screen.png|\x89PNG") {
 		t.Fatalf("uploads = %.40q", files)
 	}
 	panes, _ := e.a.readPanes()
@@ -181,7 +181,7 @@ func TestCaptureTypesThenUploadsScreenshot(t *testing.T) {
 		t.Fatalf("Prompted = %q, want the typed text so the reply is still posted", p.Prompted)
 	}
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "#capture", CreateAt: 2}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr #capture", CreateAt: 2}))
 	if shot := e.waitPost(t, 3); len(shot.FileIDs) != 1 || shot.FileIDs[0] != "file2" {
 		t.Fatalf("bare #capture post = %+v", shot)
 	}
@@ -199,7 +199,7 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 
 	fonts := fontPaths
 	fontPaths = nil
-	e.a.capture("dm", "root1", "")
+	e.a.capture("ch1", "root1", "")
 	fontPaths = fonts
 	posts := e.mm.snapshot()
 	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.HasPrefix(posts[0].Message, "❌ Could not post the screenshot: no monospace font found") {
@@ -209,7 +209,7 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 	if _, err := loadFonts(); err != nil {
 		t.Skip(err)
 	}
-	e.a.capture("dm", "root1", "")
+	e.a.capture("ch1", "root1", "")
 	posts = e.mm.snapshot()
 	if len(posts) != 2 || len(posts[1].FileIDs) != 1 || !strings.Contains(posts[1].Message, "still changing") {
 		t.Fatalf("timed-out posts = %+v", posts)
@@ -227,7 +227,7 @@ func TestCaptureBlockedIsImmediate(t *testing.T) {
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("Do you want to proceed?\r\n"), 0o644)
 
 	start := time.Now()
-	e.a.capture("dm", "root1", "")
+	e.a.capture("ch1", "root1", "")
 	posts := e.mm.snapshot()
 	if len(posts) != 1 || len(posts[0].FileIDs) != 1 || strings.Contains(posts[0].Message, "still changing") || time.Since(start) > 5*time.Second {
 		t.Fatalf("blocked capture took %s: %+v", time.Since(start), posts)
@@ -258,7 +258,7 @@ func TestCaptureEscClosesSlashPanel(t *testing.T) {
 	} {
 		os.Remove(keys)
 		e.setAgent(t, c.status)
-		e.a.capture("dm", "root1", c.cmd)
+		e.a.capture("ch1", "root1", c.cmd)
 		if got, _ := os.ReadFile(keys); string(got) != c.want {
 			t.Errorf("%s %q: keys %q, want %q", c.status, c.cmd, got, c.want)
 		}

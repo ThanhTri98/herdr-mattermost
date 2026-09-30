@@ -51,10 +51,9 @@ var (
 // escCommands are the slash commands whose panel stays open until Esc.
 var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true}
 
-// capture posts a screenshot of the pane mirrored in the DM thread rootID, or linked to channelID, into
-// that thread once the agent is blocked, or is not working and the screen has settled. After one of
-// escCommands it presses Esc to close the panel Claude leaves open, but only when herdr reports the agent
-// idle or done.
+// capture posts a screenshot of the pane linked to channelID into the thread rootID once the agent is
+// blocked, or is not working and the screen has settled. After one of escCommands it presses Esc to close
+// the panel Claude leaves open, but only when herdr reports the agent idle or done.
 func (a *app) capture(channelID, rootID, cmd string) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -63,7 +62,7 @@ func (a *app) capture(channelID, rootID, cmd string) {
 	}
 	var id string
 	for pid, p := range panes {
-		if channelID == a.dmID && p.RootID == rootID || channelID != a.dmID && p.ChannelID == channelID {
+		if p.ChannelID == channelID {
 			id = pid
 		}
 	}

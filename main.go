@@ -1,11 +1,11 @@
-// herdr-mm mirrors opted-in herdr agent panes into a Mattermost DM between a bot and one user, or a channel.
+// herdr-mm mirrors opted-in herdr agent panes into Mattermost channels, one channel per pane, obeying one user.
 //
 //	herdr-mm start   startup hook: launch the daemon detached (a second daemon exits at once)
 //	herdr-mm daemon  hold the Mattermost WebSocket and type thread replies into agents
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
-//	herdr-mm status  popup pane: list agent panes, toggle the selected one, pick its DM or channel, edit the settings, close on q or Esc
+//	herdr-mm status  popup pane: list agent panes, toggle the selected one, pick its channel, edit the settings, close on q or Esc
 package main
 
 import (
@@ -75,7 +75,7 @@ func main() {
 type app struct {
 	mmURL, token, user                                   string // from settings.json, then .env, in $HERDR_PLUGIN_CONFIG_DIR
 	envPath, settingsPath, stateDir, herdrBin, claudeDir string
-	botID, botName, userID, dmID                         string // filled by connect
+	botID, botName, userID                               string // filled by connect
 	lastPost                                             int64  // create_at of the last post the daemon handled
 	connected                                            bool   // the daemon's WebSocket has connected before
 }
@@ -263,9 +263,9 @@ func (a *app) daemon() error {
 	}
 	b, _ := os.ReadFile(filepath.Join(a.stateDir, "last_post"))
 	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
-		a.lastPost = n // otherwise it stays at the DM's newest post, set by connect
+		a.lastPost = n // otherwise catch-up starts at each pane's root post
 	}
-	log.Printf("daemon started: obeying @%s in DM %s", a.user, a.dmID)
+	log.Printf("daemon started: obeying @%s", a.user)
 	return a.listen()
 }
 
@@ -502,17 +502,24 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		if r.Mirrored {
 			on = a.t("popup.yes")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, a.targetName(r.Target))
+		ch := ""
+		if r.Target.ID != "" {
+			ch = a.targetName(r.Target)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, ch)
 	}
 	return tw.Flush()
 }
 
-// targetName names a pane's target in the popup.
+// targetName names a pane's channel, marked public or private, or the unlink choice of the picker for none.
 func (a *app) targetName(t target) string {
-	if t.ID == "" {
-		return a.t("target.dm")
+	switch {
+	case t.ID == "":
+		return a.t("picker.unlink")
+	case t.Private:
+		return "🔒 " + t.Name
 	}
-	return "~" + t.Name
+	return "# " + t.Name
 }
 
 // readKeys reads the next keys typed; keys typed quickly arrive in one read. A lone Esc is "\x1b".
@@ -535,7 +542,7 @@ func readKeys() ([]string, error) {
 }
 
 // popup redraws the status after every key: arrows or j/k move, Enter or Space toggles the selected
-// pane, t picks its target, s opens the settings, q or Esc closes.
+// pane, t picks its channel, s opens the settings, q or Esc closes.
 func (a *app) popup() {
 	defer rawMode()()
 	sel, msg := 0, ""
@@ -565,7 +572,7 @@ func (a *app) popup() {
 				return
 			case "t":
 				if sel < len(rows) {
-					msg = a.pickTarget(rows[sel])
+					msg = a.pickTarget(rows[sel], false)
 				}
 				break keys // the picker read the keys that followed
 			case "s":
@@ -580,6 +587,10 @@ func (a *app) popup() {
 			case "\x1b[B", "j":
 				sel = max(min(sel+1, len(rows)-1), 0)
 			case "\r", "\n", " ":
+				if sel < len(rows) && !rows[sel].Mirrored && rows[sel].Target.ID == "" {
+					msg = a.pickTarget(rows[sel], true) // mirroring needs a channel
+					break keys
+				}
 				if sel < len(rows) {
 					msg = a.popupToggle(rows[sel])
 				}
@@ -601,13 +612,20 @@ func (a *app) popupToggle(r row) string {
 	return ""
 }
 
-// pickTarget lists the DM and the bot's channels not linked to another pane, and links the pane to the
-// one picked with Enter; q or Esc cancels. It returns the error to show, if any.
-func (a *app) pickTarget(r row) string {
+// pickTarget lists the bot's channels not linked to another pane, and an unlink line when the pane has
+// a channel, and links the pane to the one picked with Enter, then mirrors it when mirror is set; q or
+// Esc cancels. It returns the error to show, if any.
+func (a *app) pickTarget(r row, mirror bool) string {
 	fmt.Printf("\n\n"+a.t("picker.loading"), r.Name)
 	opts, err := a.targetOptions(r.ID)
 	if err != nil {
 		return err.Error()
+	}
+	if r.Target.ID != "" {
+		opts = append(opts, target{})
+	}
+	if len(opts) == 0 {
+		return a.t("picker.none")
 	}
 	sel := max(slices.IndexFunc(opts, func(t target) bool { return t.ID == r.Target.ID }), 0)
 	for {
@@ -638,13 +656,16 @@ func (a *app) pickTarget(r row) string {
 				if err := a.retarget(r.ID, opts[sel]); err != nil {
 					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 				}
+				if mirror {
+					return a.popupToggle(r)
+				}
 				return ""
 			}
 		}
 	}
 }
 
-// targetOptions is the DM followed by the channels the bot is in that no other pane is linked to.
+// targetOptions is the channels the bot is in that no other pane is linked to.
 func (a *app) targetOptions(id string) ([]target, error) {
 	if err := a.requireMM(); err != nil {
 		return nil, err
@@ -657,7 +678,7 @@ func (a *app) targetOptions(id string) ([]target, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]target{{}}, freeChannels(chans, targets, id)...), nil
+	return freeChannels(chans, targets, id), nil
 }
 
 // settingsScreen asks for the settings, saves them and restarts the daemon so it uses them.
@@ -733,8 +754,8 @@ type pane struct {
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
 	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
-	Channel    string `json:"channel,omitempty"`     // name of the channel the thread is in, "" for the DM
-	ReplyRoot  string `json:"reply_root,omitempty"`  // in a channel, the thread of the last question typed in
+	Channel    string `json:"channel,omitempty"`     // name of the channel the thread is in; "" was the DM, no longer supported
+	ReplyRoot  string `json:"reply_root,omitempty"`  // the thread of the last question typed in
 }
 
 // recent is the last few thread replies typed into a pane, oldest first. panes.json written before
@@ -769,12 +790,15 @@ func (a *app) withState(fn func(map[string]*pane) error) error {
 	return errors.Join(fnErr, writeFile(filepath.Join(a.stateDir, "panes.json"), panes))
 }
 
-// target is a channel a pane is linked to, by id, with its name for the popup. A pane with none is
-// linked to the DM.
-type target struct{ ID, Name string }
+// target is a channel a pane is linked to, by id, with its name and whether it is private for the popup.
+// A pane with none is not mirrored.
+type target struct {
+	ID, Name string
+	Private  bool `json:",omitempty"`
+}
 
 // readTargets loads targets.json, which maps pane ids to their channel. A channel holds one pane:
-// when several are linked to it, the first in pane order keeps it and the others fall back to the DM.
+// when several are linked to it, the first in pane order keeps it and the others lose their channel.
 // Writes go through writeTargets under state.lock.
 func (a *app) readTargets() (map[string]target, error) {
 	path := filepath.Join(a.stateDir, "targets.json")
@@ -811,8 +835,9 @@ func freeChannels(chans []target, targets map[string]target, id string) []target
 	})
 }
 
-// retarget links a pane to a channel, or to the DM for a target with no id. A mirrored pane's thread
-// is stopped where it was and a new one started in the new place; with its agent gone it stays off.
+// retarget links a pane to a channel, or unlinks it for a target with no id. A mirrored pane's thread
+// is stopped where it was and, unless unlinked, a new one started in the new channel; with its agent
+// gone it stays off.
 func (a *app) retarget(id string, to target) error {
 	var changed, mirrored bool
 	err := a.withState(func(panes map[string]*pane) error {
@@ -834,14 +859,19 @@ func (a *app) retarget(id string, to target) error {
 	if err != nil || !changed || !mirrored {
 		return err
 	}
-	stop, start := a.toggle(id), a.toggle(id)
+	stop := a.toggle(id)
+	if to.ID == "" {
+		return stop
+	}
+	start := a.toggle(id)
 	if he := (*herdrError)(nil); errors.As(start, &he) && he.Code == "agent_not_found" {
 		start = nil
 	}
 	return errors.Join(stop, start)
 }
 
-// readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
+// readPanes loads panes.json. withState replaces it by rename, so it is never read half written. A pane
+// mirrored to the DM, before channels were the only place, is left out, so it reads as off.
 func (a *app) readPanes() (map[string]*pane, error) {
 	path := filepath.Join(a.stateDir, "panes.json")
 	panes := map[string]*pane{}
@@ -852,6 +882,7 @@ func (a *app) readPanes() (map[string]*pane, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+	maps.DeleteFunc(panes, func(_ string, p *pane) bool { return p.Channel == "" })
 	return panes, nil
 }
 
@@ -869,6 +900,14 @@ func (a *app) toggle(id string) error {
 			p.Status = "off"
 			return errors.Join(a.patchPost(p.RootID, a.rootMessage(p)), a.postStopped(p))
 		}
+		targets, err := a.readTargets()
+		if err != nil {
+			return err
+		}
+		t := targets[id]
+		if t.ID == "" {
+			return errors.New(a.t("toggle.nochannel"))
+		}
 		if err := a.connect(); err != nil {
 			return err
 		}
@@ -876,12 +915,7 @@ func (a *app) toggle(id string) error {
 		if err != nil {
 			return err
 		}
-		targets, err := a.readTargets()
-		if err != nil {
-			return err
-		}
-		t := targets[id]
-		p := &pane{ChannelID: cmp.Or(t.ID, a.dmID), Channel: t.Name, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
+		p := &pane{ChannelID: t.ID, Channel: t.Name, Status: info.Status, Agent: info.Agent, Cwd: info.Cwd}
 		a.label(id, p, panes)
 		_, p.LastReply, _, _, _ = lastReply(a.transcript(info)) // only turns after sharing are posted
 		if p.RootID, err = a.createPost(p.ChannelID, "", a.rootMessage(p)); err != nil {
@@ -1020,10 +1054,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
 			if p.fromThread(r.prompts) {
-				text := r.text
-				if p.Channel != "" {
-					text = "@" + a.user + " " + text // answers the asker, who can only be MM_USER
-				}
+				text := "@" + a.user + " " + r.text // answers the asker, who can only be MM_USER
 				if _, err := a.createPost(p.ChannelID, cmp.Or(p.ReplyRoot, p.RootID), text); err != nil {
 					return err
 				}
@@ -1070,10 +1101,7 @@ func (a *app) rootMessage(p *pane) string {
 	case "closed":
 		return head + "\n" + a.t("root.closed")
 	}
-	if p.Channel != "" {
-		return head + "\n" + a.t("root.channel")
-	}
-	return head + "\n" + a.t("root.reply")
+	return head + "\n" + a.t("root.channel")
 }
 
 // postStopped posts the top-level notice that mirroring of a pane was switched off or its pane closed;
