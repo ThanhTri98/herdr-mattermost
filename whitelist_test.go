@@ -57,18 +57,37 @@ func TestReadLine(t *testing.T) {
 	}
 }
 
-func TestEscAfterPick(t *testing.T) {
+func TestWhitelistKeepsStoredMembers(t *testing.T) {
 	e := newTestEnv(t)
-	defer func(k *bufio.Reader) { keyboard = k }(keyboard)
-	// One byte per read, as typed: Enter picks Ops, the only free channel, then Esc leaves its whitelist.
-	keyboard = bufio.NewReader(iotest.OneByteReader(strings.NewReader("\r\x1b")))
-	if msg := e.a.pickTarget(row{ID: "w9:p1", Name: "new"}, false); msg != "" {
-		t.Fatalf("pick then Esc = %q, want no message", msg)
+	// bob-old renamed and another account took bob; gone-id renamed and nobody took gone.
+	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"id":"bob-old","username":"bob"}],"ch2":[{"id":"gone-id","username":"gone"}]}`), 0o600)
+	if _, err := e.a.editWhitelist(bufio.NewReader(strings.NewReader(", carol\r")), io.Discard, target{ID: "ch1", Name: "Dev"}); err != nil {
+		t.Fatal(err)
 	}
-	targets, _ := e.a.readTargets()
+	if _, err := e.a.editWhitelist(bufio.NewReader(strings.NewReader("\r")), io.Discard, target{ID: "ch2", Name: "Ops"}); err != nil {
+		t.Fatalf("Enter on the unchanged list = %v", err)
+	}
 	lists, _ := e.a.readWhitelists()
-	if targets["w9:p1"].ID != "ch2" || len(lists["ch2"]) != 0 || len(lists["ch1"]) != 1 {
-		t.Fatalf("the pick is kept and the whitelists unchanged: targets %+v, whitelists %+v", targets, lists)
+	if !slices.Equal(lists["ch1"], []member{{"bob-old", "bob"}, {"carol-id", "carol"}}) || !slices.Equal(lists["ch2"], []member{{"gone-id", "gone"}}) {
+		t.Fatalf("names already listed keep their member: %+v", lists)
+	}
+}
+
+func TestEscAfterPick(t *testing.T) {
+	defer func(k *bufio.Reader) { keyboard = k }(keyboard)
+	for _, mirror := range []bool{false, true} {
+		e := newTestEnv(t)
+		// One byte per read, as typed: Enter picks Ops, the only free channel, then Esc leaves its whitelist.
+		keyboard = bufio.NewReader(iotest.OneByteReader(strings.NewReader("\r\x1b")))
+		if msg := e.a.pickTarget(row{ID: "w9:p1", Name: "new"}, mirror); msg != "" {
+			t.Fatalf("mirror %v: pick then Esc = %q, want no message", mirror, msg)
+		}
+		targets, _ := e.a.readTargets()
+		lists, _ := e.a.readWhitelists()
+		panes, _ := e.a.readPanes()
+		if targets["w9:p1"].ID != "ch2" || len(lists["ch2"]) != 0 || len(lists["ch1"]) != 1 || panes["w9:p1"] != nil || len(e.mm.posts) != 0 {
+			t.Fatalf("mirror %v: the pick is kept, the whitelists unchanged and nothing mirrored: targets %+v, whitelists %+v, panes %+v", mirror, targets, lists, panes)
+		}
 	}
 }
 

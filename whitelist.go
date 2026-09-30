@@ -86,8 +86,9 @@ func (a *app) resolveUsers(names []string) ([]member, error) {
 }
 
 // editWhitelist edits on w the whitelist of a channel, prefilled with the current one, with keys read
-// from r, and saves the names typed, comma or space separated; an empty line empties it. Esc leaves it
-// unchanged and returns false.
+// from r, and saves the names typed, comma or space separated; an empty line empties it. A name already
+// on the list keeps its member, so only added names are looked up. Esc leaves it unchanged and returns
+// false.
 func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) (bool, error) {
 	lists, err := a.readWhitelists()
 	if err != nil {
@@ -105,9 +106,22 @@ func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) (bool, error
 	if names = slices.Compact(slices.DeleteFunc(names, func(n string) bool { return n == "" })); len(names) == 0 {
 		delete(lists, t.ID)
 	} else {
-		ms, err := a.resolveUsers(names)
-		if err != nil {
-			return false, err
+		var ms []member
+		var added []string
+		for _, n := range names {
+			if i := slices.IndexFunc(lists[t.ID], func(m member) bool { return strings.EqualFold(m.Username, n) }); i >= 0 {
+				ms = append(ms, lists[t.ID][i])
+			} else {
+				added = append(added, n)
+			}
+		}
+		if len(added) > 0 {
+			found, err := a.resolveUsers(added)
+			if err != nil {
+				return false, err
+			}
+			ms = append(ms, found...)
+			slices.SortFunc(ms, func(x, y member) int { return strings.Compare(x.Username, y.Username) })
 		}
 		lists[t.ID] = ms
 	}

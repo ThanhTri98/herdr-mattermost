@@ -412,7 +412,7 @@ func (a *app) pickTarget(r row, mirror bool) string {
 					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
 				}
 				if opts[sel].ID != "" {
-					if msg := a.whitelistScreen(opts[sel]); msg != "" && msg != a.t("whitelist.saved") {
+					if msg := a.whitelistScreen(opts[sel]); msg != a.t("whitelist.saved") {
 						return msg // linked, but the whitelist was not saved: not mirrored yet
 					}
 				}
