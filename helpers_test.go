@@ -77,8 +77,12 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"id":"ot","type":"O","name":"off-topic","display_name":"Off-Topic"}]`)
 	case r.Method == "GET" && path == "/teams/t1/channels/name/town-square":
 		fmt.Fprint(w, `{"id":"ts"}`)
-	case r.Method == "GET" && path == "/users/username/alice":
-		fmt.Fprint(w, `{"id":"alice-id"}`)
+	case r.Method == "GET" && strings.HasPrefix(path, "/users/username/") && fakeUsers[strings.TrimPrefix(path, "/users/username/")]:
+		name := strings.TrimPrefix(path, "/users/username/")
+		fmt.Fprintf(w, `{"id":"%s-id","username":%q}`, name, name)
+	case r.Method == "GET" && strings.HasPrefix(path, "/users/") && strings.HasSuffix(path, "-id") && fakeUsers[strings.TrimSuffix(strings.TrimPrefix(path, "/users/"), "-id")]:
+		name := strings.TrimSuffix(strings.TrimPrefix(path, "/users/"), "-id")
+		fmt.Fprintf(w, `{"id":"%s-id","username":%q}`, name, name)
 	case r.Method == "POST" && path == "/posts":
 		p := &post{}
 		json.NewDecoder(r.Body).Decode(p)
@@ -129,6 +133,9 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fakeUsers are the users the fake Mattermost knows, with ids "<username>-id".
+var fakeUsers = map[string]bool{"alice": true, "bob": true, "carol": true}
+
 func (f *fakeMM) snapshot() []post {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -155,6 +162,7 @@ case "$1 $2" in
 "agent send-keys") printf '%s|%s\n' "$3" "$4" >> "$d/keys.log" ;;
 "agent prompt")
   printf '%s|%s\n' "$3" "$4" >> "$d/prompts.log"
+  if [ -e "$d/fail" ]; then echo '{"error":{"code":"pane_gone","message":"pane is gone"},"id":"x"}' >&2; exit 1; fi
   if [ -e "$d/blocked" ]; then echo '{"error":{"code":"agent_blocked","message":"blocked"},"id":"x"}' >&2; exit 1; fi
   echo '{"id":"x","result":{"type":"agent_prompted"}}' ;;
 *) echo "unexpected $*" >&2; exit 2 ;;
@@ -180,11 +188,12 @@ func newTestEnv(t *testing.T) *testEnv {
 	os.MkdirAll(state, 0o755)
 	os.WriteFile(filepath.Join(state, "lang"), []byte("en\n"), 0o600) // most tests check the English texts
 	os.WriteFile(filepath.Join(state, "targets.json"), []byte(`{"w1:p1":{"ID":"ch1","Name":"Dev"}}`), 0o600)
+	os.WriteFile(filepath.Join(state, "whitelists.json"), []byte(`{"ch1":[{"id":"alice-id","username":"alice"}]}`), 0o600)
 	claude := filepath.Join(dir, "claude")
 	// Not the pane's cwd: Claude may have been started in another directory.
 	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
 	os.MkdirAll(filepath.Dir(transcript), 0o755)
-	a := &app{mmURL: srv.URL, token: "tok", user: "alice", envPath: filepath.Join(dir, ".env"),
+	a := &app{mmURL: srv.URL, token: "tok", envPath: filepath.Join(dir, ".env"),
 		stateDir: state, herdrBin: filepath.Join(herdrDir, "herdr"), claudeDir: claude}
 	return &testEnv{a, mm, herdrDir, transcript}
 }
@@ -271,7 +280,7 @@ func postedIn(p post, channelType string) []byte {
 
 func mirroredEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
-	e.a.botID, e.a.botName, e.a.userID = "bot", "herdr", "alice-id"
+	e.a.botID, e.a.botName = "bot", "herdr"
 	e.a.withState(func(panes map[string]*pane) error {
 		panes["w1:p1"] = &pane{RootID: "root1", ChannelID: "ch1", Channel: "Dev", Status: "idle", Agent: "claude", Cwd: "/work/proj"}
 		return nil

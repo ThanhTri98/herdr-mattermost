@@ -73,7 +73,7 @@ func TestSameLabelEverywhere(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[0].Name != "api" || rows[1].ID != "w1:p2" || rows[1].Name != "api #2" {
 		t.Fatalf("rows = %+v %v", rows, err)
 	}
-	if got := e.a.listPanes(); !strings.Contains(got, "· **api #2** · claude") {
+	if got := e.a.listPanes("ch1"); !strings.Contains(got, "· **api #2** · claude") {
 		t.Fatalf("list = %q", got)
 	}
 	if err := e.a.toggle("w1:p2"); err != nil {

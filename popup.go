@@ -72,6 +72,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		fmt.Fprintln(w, a.t("popup.none"))
 		return nil
 	}
+	lists, listsErr := a.readWhitelists()
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, a.t("popup.header"))
 	for i, r := range rows {
@@ -82,11 +83,16 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		if r.Mirrored {
 			on = a.t("popup.yes")
 		}
-		ch := ""
+		ch, wl := "", ""
 		if r.Target.ID != "" {
-			ch = a.targetName(r.Target)
+			ch, wl = a.targetName(r.Target), usernames(lists[r.Target.ID], 3)
+			if listsErr != nil {
+				wl = "?"
+			} else if wl == "" {
+				wl = a.t("whitelist.none")
+			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, ch)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, ch, wl)
 	}
 	return tw.Flush()
 }
@@ -122,7 +128,7 @@ func readKeys() ([]string, error) {
 }
 
 // popup redraws the status after every key: arrows or j/k move, Enter or Space toggles the selected
-// pane, t picks its channel, s opens the settings, q or Esc closes.
+// pane, t picks its channel, w edits its channel's whitelist, s opens the settings, q or Esc closes.
 func (a *app) popup() {
 	defer rawMode()()
 	sel, msg := 0, ""
@@ -155,6 +161,13 @@ func (a *app) popup() {
 					msg = a.pickTarget(rows[sel], false)
 				}
 				break keys // the picker read the keys that followed
+			case "w":
+				if sel < len(rows) && rows[sel].Target.ID == "" {
+					msg = a.t("whitelist.nochannel")
+				} else if sel < len(rows) {
+					msg = a.whitelistScreen(rows[sel].Target)
+				}
+				break keys
 			case "s":
 				msg = a.settingsScreen()
 				break keys
@@ -193,8 +206,8 @@ func (a *app) popupToggle(r row) string {
 }
 
 // pickTarget lists the bot's channels not linked to another pane, and an unlink line when the pane has
-// a channel, and links the pane to the one picked with Enter, then mirrors it when mirror is set; q or
-// Esc cancels. It returns the error to show, if any.
+// a channel, and links the pane to the one picked with Enter, asks for that channel's whitelist, then
+// mirrors the pane when mirror is set; q or Esc cancels. It returns the error to show, if any.
 func (a *app) pickTarget(r row, mirror bool) string {
 	fmt.Printf("\n\n"+a.t("picker.loading"), r.Name)
 	opts, err := a.targetOptions(r.ID)
@@ -239,6 +252,11 @@ func (a *app) pickTarget(r row, mirror bool) string {
 				}
 				if err := a.retarget(r.ID, opts[sel]); err != nil {
 					return fmt.Sprintf(a.t("popup.failed"), r.Name, err)
+				}
+				if opts[sel].ID != "" {
+					if msg := a.whitelistScreen(opts[sel]); msg != a.t("whitelist.saved") {
+						return msg // linked, but the whitelist was not saved: not mirrored yet
+					}
 				}
 				if mirror {
 					return a.popupToggle(r)
