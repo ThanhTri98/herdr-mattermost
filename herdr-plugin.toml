@@ -2,7 +2,7 @@ id = "herdr-mattermost"
 name = "Mattermost"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Mirror agent panes into a Mattermost DM or channel and type thread replies into the agent"
+description = "Mirror agent panes into Mattermost channels and type @mentions of the bot into the agent"
 platforms = ["linux", "macos"]
 
 [[build]]
@@ -23,7 +23,7 @@ command = ["sh", "-c", "exec ./herdr-mm status"]
 [[actions]]
 id = "status"
 title = "Show Mattermost status"
-description = "Open a popup listing the agent panes, to toggle their mirroring and pick their DM or channel, and whether the daemon runs"
+description = "Open a popup listing the agent panes, to toggle their mirroring and pick their channel, and whether the daemon runs"
 contexts = ["global", "workspace", "pane"]
 # herdr's popup is a singleton, so opening it twice is not an error
 command = ["sh", "-c", "out=$(\"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin herdr-mattermost --entrypoint status 2>&1) || case $out in *'already open'*) ;; *) echo \"$out\" >&2; exit 1 ;; esac"]
@@ -38,7 +38,7 @@ command = ["sh", "-c", "exec ./herdr-mm toggle"]
 [[actions]]
 id = "stop"
 title = "Stop Mattermost daemon"
-description = "Stop the daemon that types Mattermost replies into agents"
+description = "Stop the daemon that types Mattermost messages into agents"
 contexts = ["global", "workspace", "pane"]
 command = ["sh", "-c", "exec ./herdr-mm stop"]
 

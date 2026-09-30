@@ -76,13 +76,15 @@ func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && path == "/users/me":
 		fmt.Fprint(w, `{"id":"bot","username":"herdr"}`)
 	case r.Method == "GET" && path == "/users/me/teams":
-		fmt.Fprint(w, `[{"id":"t1","display_name":"Team"}]`)
+		fmt.Fprint(w, `[{"id":"t1","name":"team","display_name":"Team"}]`)
 	case r.Method == "GET" && path == "/users/me/teams/t1/channels":
-		fmt.Fprint(w, `[{"id":"dm","type":"D","display_name":"alice"},{"id":"ch2","type":"P","display_name":"Ops"},{"id":"ch1","type":"O","display_name":"Dev"}]`)
+		fmt.Fprint(w, `[{"id":"dm","type":"D","name":"bot__alice","display_name":"alice"},{"id":"ch2","type":"P","name":"ops","display_name":"Ops"},
+			{"id":"ch1","type":"O","name":"dev","display_name":"Dev"},{"id":"ts","type":"O","name":"town-square","display_name":"Town Square"},
+			{"id":"ot","type":"O","name":"off-topic","display_name":"Off-Topic"}]`)
+	case r.Method == "GET" && path == "/teams/t1/channels/name/town-square":
+		fmt.Fprint(w, `{"id":"ts"}`)
 	case r.Method == "GET" && path == "/users/username/alice":
 		fmt.Fprint(w, `{"id":"alice-id"}`)
-	case r.Method == "POST" && path == "/channels/direct":
-		fmt.Fprint(w, `{"id":"dm"}`)
 	case r.Method == "POST" && path == "/posts":
 		p := &post{}
 		json.NewDecoder(r.Body).Decode(p)
@@ -183,6 +185,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o755)
 	os.WriteFile(filepath.Join(state, "lang"), []byte("en\n"), 0o600) // most tests check the English texts
+	os.WriteFile(filepath.Join(state, "targets.json"), []byte(`{"w1:p1":{"ID":"ch1","Name":"Dev"}}`), 0o600)
 	claude := filepath.Join(dir, "claude")
 	// Not the pane's cwd: Claude may have been started in another directory.
 	transcript := filepath.Join(claude, "projects", "-somewhere-else", "sess-1.jsonl")
@@ -241,8 +244,8 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || posts[0].ChannelID != "dm" || posts[0].RootID != "" {
-		t.Fatalf("want one root post in the DM, got %+v", posts)
+	if len(posts) != 1 || posts[0].ChannelID != "ch1" || posts[0].RootID != "" {
+		t.Fatalf("want one root post in the channel, got %+v", posts)
 	}
 	for _, want := range []string{"idle", "claude", "my_proj.x"} {
 		if !strings.Contains(posts[0].Message, want) {
@@ -275,7 +278,7 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
 	}
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "fix the\nbug", CreateAt: 100}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: posts[0].ID, UserID: "alice-id", Message: "@herdr fix the\nbug", CreateAt: 100}))
 	e.setAgent(t, "working")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	e.appendTranscript(t,
@@ -294,7 +297,7 @@ func TestStatusToPostFlow(t *testing.T) {
 	if len(posts) != 3 || !strings.Contains(posts[0].Message, "done") || !strings.Contains(posts[1].Message, "Received") {
 		t.Fatalf("want root edited to done, the acknowledgement and one reply, got %+v", posts)
 	}
-	if posts[2].RootID != posts[0].ID || posts[2].Message != "Final answer.\n\nSecond block." {
+	if posts[2].RootID != posts[0].ID || posts[2].Message != "@alice Final answer.\n\nSecond block." {
 		t.Fatalf("reply = %+v", posts[2])
 	}
 
@@ -319,7 +322,7 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("unshare should mark the root post and post one notice: %+v", posts)
 	}
 	want := "⚪ Mirroring stopped for **api** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
-	if n := posts[4]; n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
+	if n := posts[4]; n.RootID != "" || n.ChannelID != "ch1" || n.Message != want {
 		t.Fatalf("stop notice = %+v, want top-level %q", n, want)
 	}
 }
@@ -345,7 +348,7 @@ func TestReplyPostedWhenRootEditFails(t *testing.T) {
 	if err := e.a.event("pane.agent_status_changed", []byte(`{"data":{"pane_id":"w1:p1"}}`)); err == nil || !strings.Contains(err.Error(), "edit time limit") {
 		t.Fatalf("event = %v, want the edit error", err)
 	}
-	if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].Message != "Done." {
+	if posts := e.mm.snapshot(); len(posts) != 2 || posts[1].Message != "@alice Done." {
 		t.Fatalf("the reply must be posted even when the root edit fails: %+v", posts)
 	}
 }
@@ -364,7 +367,7 @@ func TestPaneMovedKeepsThread(t *testing.T) {
 	if len(posts) != 1 || strings.Contains(posts[0].Message, "w2:p1") {
 		t.Fatalf("root post should not show the pane id: %+v", posts)
 	}
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: posts[0].ID, UserID: "alice-id", Message: "go on", CreateAt: 100}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: posts[0].ID, UserID: "alice-id", Message: "@herdr go on", CreateAt: 100}))
 	if got := e.prompts(); got != "w2:p1|go on\n" {
 		t.Fatalf("prompts = %q", got)
 	}
@@ -388,7 +391,7 @@ func TestPaneClosedStopsMirroring(t *testing.T) {
 		t.Fatalf("root = %q", posts[0].Message)
 	}
 	want := "⚫ Pane closed, mirroring stopped for **web** · claude · `my_proj.x` · [thread](" + e.a.mmURL + "/_redirect/pl/" + posts[0].ID + ")"
-	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "dm" || n.Message != want {
+	if n := posts[len(posts)-1]; len(posts) != 2 || n.RootID != "" || n.ChannelID != "ch1" || n.Message != want {
 		t.Fatalf("close notice = %+v, want one top-level %q", posts, want)
 	}
 	e.a.withState(func(panes map[string]*pane) error {
@@ -458,12 +461,12 @@ func TestThreadPromptTranscriptShapes(t *testing.T) {
 			}
 			root := e.mm.snapshot()[0].ID
 			for i, m := range c.sent {
-				e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: m, CreateAt: int64(100 + i)}))
+				e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr " + m, CreateAt: int64(100 + i)}))
 			}
 			e.appendTranscript(t, append(c.lines, assistant("r1", "m9", "text", "All done.", false))...)
 			e.setAgent(t, "idle")
 			e.event(t, "pane.agent_status_changed", "w1:p1")
-			if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "All done." || posts[len(posts)-1].RootID != root {
+			if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "@alice All done." || posts[len(posts)-1].RootID != root {
 				t.Fatalf("the reply to a thread prompt must be posted: %+v", posts)
 			}
 		})
@@ -485,13 +488,13 @@ func TestPromptedFollowsThread(t *testing.T) {
 		e.event(t, "pane.agent_status_changed", "w1:p1")
 		e.setAgent(t, "working")
 		e.event(t, "pane.agent_status_changed", "w1:p1")
-		if posts := e.mm.snapshot(); posts[len(posts)-1].Message != want {
+		if posts := e.mm.snapshot(); strings.TrimPrefix(posts[len(posts)-1].Message, "@alice ") != want {
 			t.Fatalf("last post = %q, want %q: %+v", posts[len(posts)-1].Message, want, posts)
 		}
 	}
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "run the tests", CreateAt: 100}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr run the tests", CreateAt: 100}))
 	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "yes", CreateAt: 101}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr yes", CreateAt: 101}))
 	os.Remove(filepath.Join(e.herdrDir, "blocked"))
 	e.appendTranscript(t, typed("t1", "run the tests"), assistant("t2", "m1", "text", "Started them in the background.", false))
 	idle("Started them in the background.")
@@ -503,8 +506,8 @@ func TestPromptedFollowsThread(t *testing.T) {
 	e.appendTranscript(t, typed("t5", "yes"), assistant("t6", "m3", "text", "terminal answer", false))
 	idle("All tests pass.")
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "check the logs", CreateAt: 102}))
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "and the config", CreateAt: 103}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr check the logs", CreateAt: 102}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr and the config", CreateAt: 103}))
 	e.appendTranscript(t, typed("t7", "check the logs"), assistant("t8", "m4", "text", "Logs are clean.", false))
 	idle("Logs are clean.")
 	e.appendTranscript(t, typed("t9", "and the config"), assistant("t10", "m5", "text", "Config is fine.", false))
@@ -514,7 +517,7 @@ func TestPromptedFollowsThread(t *testing.T) {
 		assistant("t12", "m6", "text", "It fails because of the image.", false))
 	idle("Config is fine.")
 
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "queued from the thread", CreateAt: 104}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr queued from the thread", CreateAt: 104}))
 	e.appendTranscript(t, typed("t13", "typed in the terminal"), assistant("t14", "m7", "text", "terminal answer", false), typed("t15", "queued from the thread"))
 	idle("📥 Received - the agent is working on it.")
 	e.appendTranscript(t, assistant("t16", "m8", "text", "Thread answer.", false))
@@ -524,7 +527,7 @@ func TestPromptedFollowsThread(t *testing.T) {
 	e.appendTranscript(t, typed("t17", "clean the build"), assistant("t18", "m9", "tool_use", "", false))
 	e.setAgent(t, "blocked")
 	e.event(t, "pane.agent_status_changed", "w1:p1")
-	if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "Thread answer." {
+	if posts := e.mm.snapshot(); posts[len(posts)-1].Message != "@alice Thread answer." {
 		t.Fatalf("a dialog in a turn typed in the terminal must not be posted: %+v", posts)
 	}
 }
@@ -597,7 +600,7 @@ func threadTurns(t *testing.T, history ...string) (e *testEnv, send func(string,
 	}
 	root := e.mm.snapshot()[0].ID
 	send = func(m string, at int64) {
-		e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: m, CreateAt: at}))
+		e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr " + m, CreateAt: at}))
 	}
 	idle = func(want ...string) {
 		t.Helper()
@@ -609,7 +612,7 @@ func threadTurns(t *testing.T, history ...string) (e *testEnv, send func(string,
 		var got []string
 		for _, p := range e.mm.snapshot()[before:] {
 			if !strings.HasPrefix(p.Message, "📥") {
-				got = append(got, p.Message)
+				got = append(got, strings.TrimPrefix(p.Message, "@alice "))
 			}
 		}
 		if !slices.Equal(got, want) {
@@ -634,17 +637,20 @@ func TestLastReplyAndTruncate(t *testing.T) {
 	}
 }
 
-func posted(p post) []byte {
+func posted(p post) []byte { return postedIn(p, "O") }
+
+// postedIn is the WebSocket event of a post in a channel of the given type, such as "D" for a DM.
+func postedIn(p post, channelType string) []byte {
 	b, _ := json.Marshal(p)
-	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]string{"post": string(b)}})
+	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]string{"post": string(b), "channel_type": channelType}})
 	return ev
 }
 
 func mirroredEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
-	e.a.botID, e.a.botName, e.a.userID, e.a.dmID = "bot", "herdr", "alice-id", "dm"
+	e.a.botID, e.a.botName, e.a.userID = "bot", "herdr", "alice-id"
 	e.a.withState(func(panes map[string]*pane) error {
-		panes["w1:p1"] = &pane{RootID: "root1", ChannelID: "dm", Status: "idle", Agent: "claude", Cwd: "/work/proj"}
+		panes["w1:p1"] = &pane{RootID: "root1", ChannelID: "ch1", Channel: "Dev", Status: "idle", Agent: "claude", Cwd: "/work/proj"}
 		return nil
 	})
 	return e
@@ -657,7 +663,7 @@ func (e *testEnv) prompts() string {
 
 func TestReplyPromptsAgent(t *testing.T) {
 	e := mirroredEnv(t)
-	e.a.handleEvent(posted(post{ID: "r1", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "--fix the bug", CreateAt: 1}))
+	e.a.handleEvent(posted(post{ID: "r1", ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr --fix the bug", CreateAt: 1}))
 	if got := e.prompts(); got != "w1:p1|--fix the bug\n" {
 		t.Fatalf("prompts = %q", got)
 	}
@@ -666,7 +672,7 @@ func TestReplyPromptsAgent(t *testing.T) {
 	}
 
 	os.WriteFile(filepath.Join(e.herdrDir, "blocked"), nil, 0o644)
-	e.a.handleEvent(posted(post{ID: "r2", ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "yes", CreateAt: 2}))
+	e.a.handleEvent(posted(post{ID: "r2", ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr yes", CreateAt: 2}))
 	posts := e.mm.snapshot()
 	if len(posts) != 2 || posts[1].RootID != "root1" || !strings.Contains(posts[1].Message, "Approve or answer it on the machine") {
 		t.Fatalf("blocked answer = %+v", posts)
@@ -674,14 +680,14 @@ func TestReplyPromptsAgent(t *testing.T) {
 
 	e.a.withState(func(panes map[string]*pane) error {
 		panes["w1:p1"].Name = "web"
-		panes["w2:p1"] = &pane{RootID: "root2", Status: "idle", Agent: "claude", Name: "web"}
-		panes["w3:p1"] = &pane{RootID: "root3", Status: "idle", Agent: "claude"}
+		panes["w2:p1"] = &pane{RootID: "root2", Channel: "Ops", Status: "idle", Agent: "claude", Name: "web"}
+		panes["w3:p1"] = &pane{RootID: "root3", Channel: "QA", Status: "idle", Agent: "claude"}
 		return nil
 	})
-	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "dm", UserID: "alice-id", Message: " List ", CreateAt: 3}))
+	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "ch1", UserID: "alice-id", Message: "@herdr  List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
 	m := posts[len(posts)-1].Message
-	if len(posts) != 3 || posts[2].RootID != "" || strings.Contains(m, "w1:p1") || strings.Contains(m, "pane `") ||
+	if len(posts) != 3 || posts[2].RootID != "r3" || strings.Contains(m, "w1:p1") || strings.Contains(m, "pane `") ||
 		!strings.Contains(m, "**web** · claude · `proj` · [thread](") || !strings.Contains(m, "**web #2** · claude · `?` · [thread](") ||
 		!strings.Contains(m, "🟢 **idle** · claude · `?`") || !strings.Contains(m, "/_redirect/pl/root1") {
 		t.Fatalf("list answer = %+v", posts)
@@ -691,13 +697,12 @@ func TestReplyPromptsAgent(t *testing.T) {
 func TestIgnoresEveryoneButMMUser(t *testing.T) {
 	e := mirroredEnv(t)
 	for _, p := range []post{
-		{ChannelID: "dm", RootID: "root1", UserID: "bob-id", Message: "rm -rf /"},
-		{ChannelID: "dm", RootID: "root1", UserID: "bot", Message: "echo"},
-		{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "hook", Props: map[string]any{"from_webhook": "true"}},
-		{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "bot", Props: map[string]any{"from_bot": "true"}},
-		{ChannelID: "town-square", RootID: "root1", UserID: "alice-id", Message: "wrong channel"},
-		{ChannelID: "dm", RootID: "other-thread", UserID: "alice-id", Message: "not mirrored", CreateAt: 1},
-		{ChannelID: "dm", UserID: "bob-id", Message: "list"},
+		{ChannelID: "ch1", RootID: "root1", UserID: "bot", Message: "@herdr echo"},
+		{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr hook", Props: map[string]any{"from_webhook": "true"}},
+		{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr bot", Props: map[string]any{"from_bot": "true"}},
+		{ChannelID: "town-square", RootID: "root1", UserID: "alice-id", Message: "@herdr wrong channel"},
+		{ChannelID: "ch1", RootID: "other-thread", UserID: "alice-id", Message: "no mention", CreateAt: 1},
+		{ChannelID: "ch2", UserID: "bob-id", Message: "@herdr list", CreateAt: 2},
 	} {
 		e.a.handleEvent(posted(p))
 	}
@@ -711,12 +716,14 @@ func TestIgnoresEveryoneButMMUser(t *testing.T) {
 
 func TestCatchUpDeliversMissedReplies(t *testing.T) {
 	e := mirroredEnv(t)
-	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "handled before"})
-	e.a.lastPost = 1
-	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 1"})
-	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "bob-id", Message: "not alice"})
-	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "", DeleteAt: 9})
-	e.mm.add(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "missed 2"})
+	e.mm.add(post{ChannelID: "ch1", Message: "the pane's root post"})
+	e.a.withState(func(panes map[string]*pane) error { panes["w1:p1"].RootID = "post1"; return nil })
+	e.mm.add(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr handled before"})
+	e.a.lastPost = 2
+	e.mm.add(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr missed 1"})
+	e.mm.add(post{ChannelID: "ch1", RootID: "root1", UserID: "bob-id", Message: "@herdr not alice"})
+	e.mm.add(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr ", DeleteAt: 9})
+	e.mm.add(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr missed 2"})
 	if err := e.a.catchUp(); err != nil {
 		t.Fatal(err)
 	}
@@ -739,12 +746,12 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 		t.Fatalf("want a late note per caught-up reply, got %d: %+v", notes, e.mm.snapshot())
 	}
 
-	missed2 := e.mm.snapshot()[4]
+	missed2 := e.mm.snapshot()[5]
 	e.a.handleEvent(posted(missed2)) // the WebSocket delivering it too must not prompt twice
 	if err := e.a.catchUp(); err != nil {
 		t.Fatal(err)
 	}
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "live", CreateAt: 100}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr live", CreateAt: 100}))
 	if got := e.prompts(); got != "w1:p1|missed 1\nw1:p1|missed 2\nw1:p1|live\n" {
 		t.Fatalf("prompts = %q", got)
 	}
@@ -762,12 +769,13 @@ func TestConnectAnnounced(t *testing.T) {
 	}
 	var got []string
 	for _, p := range e.mm.snapshot() {
-		if p.ChannelID == "dm" && p.RootID == "" {
-			got = append(got, p.Message)
+		if p.ChannelID != "ts" || p.RootID != "" {
+			t.Fatalf("a connect notice goes top-level into Town Square only: %+v", p)
 		}
+		got = append(got, p.Message)
 	}
 	if want := []string{"🔌 Connected: the herdr-mm daemon started.", "🔌 Reconnected after the connection dropped."}; !slices.Equal(got, want) {
-		t.Fatalf("DM posts = %q, want %q", got, want)
+		t.Fatalf("Town Square posts = %q, want %q", got, want)
 	}
 }
 
@@ -775,7 +783,7 @@ func TestPluginOffStopsDaemon(t *testing.T) {
 	for _, flag := range []string{"disabled", "stopped"} {
 		e := mirroredEnv(t)
 		os.WriteFile(filepath.Join(e.herdrDir, flag), nil, 0o644)
-		err := e.a.handleEvent(posted(post{ChannelID: "dm", RootID: "root1", UserID: "alice-id", Message: "hi", CreateAt: 1}))
+		err := e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: "root1", UserID: "alice-id", Message: "@herdr hi", CreateAt: 1}))
 		if !errors.Is(err, errPluginOff) {
 			t.Fatalf("%s: handleEvent = %v", flag, err)
 		}
@@ -793,8 +801,8 @@ func TestConnectRetriesUntilMattermostAnswers(t *testing.T) {
 	retryDelay = time.Millisecond
 	e := newTestEnv(t)
 	e.mm.failLogin = 2
-	if err := e.a.connectRetry(); err != nil || e.a.dmID != "dm" || e.mm.failLogin != 0 {
-		t.Fatalf("connectRetry = %v, dm %q, logins left to fail %d", err, e.a.dmID, e.mm.failLogin)
+	if err := e.a.connectRetry(); err != nil || e.a.userID != "alice-id" || e.mm.failLogin != 0 {
+		t.Fatalf("connectRetry = %v, user %q, logins left to fail %d", err, e.a.userID, e.mm.failLogin)
 	}
 	e.a.token = "wrong"
 	if err := e.a.connectRetry(); err == nil || !strings.Contains(err.Error(), "mattermost login failed") {
@@ -918,6 +926,7 @@ func TestSameLabelEverywhere(t *testing.T) {
 	os.WriteFile(panesJSON, []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"},
 		{"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
 	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.a.stateDir, "targets.json"), []byte(`{"w1:p2":{"ID":"ch1","Name":"Dev"}}`), 0o600)
 
 	if err := e.a.toggle("w1:p2"); err != nil { // w1:p1 is not mirrored, yet it is the first "api"
 		t.Fatal(err)
@@ -929,7 +938,7 @@ func TestSameLabelEverywhere(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[0].Name != "api" || rows[1].ID != "w1:p2" || rows[1].Name != "api #2" {
 		t.Fatalf("rows = %+v %v", rows, err)
 	}
-	if got := e.a.topLevel("list"); !strings.Contains(got, "· **api #2** · claude") {
+	if got := e.a.listPanes(); !strings.Contains(got, "· **api #2** · claude") {
 		t.Fatalf("list = %q", got)
 	}
 	if err := e.a.toggle("w1:p2"); err != nil {
@@ -1094,7 +1103,7 @@ func TestLanguageSwitch(t *testing.T) {
 	if err := e.a.toggle("w1:p1"); err != nil { // Vietnamese by default
 		t.Fatal(err)
 	}
-	if m := e.mm.snapshot()[0].Message; m != "✋ **đang chờ bạn** · claude · `my_proj.x`\n_Trả lời trong thread này để gửi lệnh cho agent._" {
+	if m := e.mm.snapshot()[0].Message; m != "✋ **đang chờ bạn** · claude · `my_proj.x`\n_Nhắc (@mention) bot trong kênh này để gửi lệnh cho agent._" {
 		t.Fatalf("vi root = %q", m)
 	}
 	if err := e.a.switchLang(); err != nil {
@@ -1102,11 +1111,11 @@ func TestLanguageSwitch(t *testing.T) {
 	}
 	e.setAgent(t, "idle")
 	e.event(t, "pane.agent_status_changed", "w1:p1") // the next status update switches the root post
-	if m := e.mm.snapshot()[0].Message; m != "🟢 **idle** · claude · `my_proj.x`\n_Reply in this thread to prompt the agent._" {
+	if m := e.mm.snapshot()[0].Message; m != "🟢 **idle** · claude · `my_proj.x`\n_@mention the bot in this channel to prompt the agent._" {
 		t.Fatalf("en root = %q", m)
 	}
 	e.a.switchLang()
-	if got := e.a.topLevel("list"); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
+	if got := e.a.listPanes(); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
 		t.Fatalf("vi list = %q", got)
 	}
 	if got := e.a.truncate(strings.Repeat("x", 100), 50); !strings.HasSuffix(got, "\n… (đã cắt bớt)") {
@@ -1129,7 +1138,7 @@ func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := e.mm.snapshot()[0].ID
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "late one", CreateAt: 100}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr late one", CreateAt: 100}))
 	e.appendTranscript(t, typed("u1", "late one"))
 	go func() { // Claude writes the final entry just after herdr reports idle
 		time.Sleep(300 * time.Millisecond)
@@ -1137,12 +1146,12 @@ func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
 	}()
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts := e.mm.snapshot()
-	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Written late." {
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "@alice Written late." {
 		t.Fatalf("the reply must be posted for its own turn: %+v", posts)
 	}
 
 	// Text written before a tool call is not the answer while the turn still ends in the tool step.
-	e.a.handleEvent(posted(post{ChannelID: "dm", RootID: root, UserID: "alice-id", Message: "fix the bug", CreateAt: 101}))
+	e.a.handleEvent(posted(post{ChannelID: "ch1", RootID: root, UserID: "alice-id", Message: "@herdr fix the bug", CreateAt: 101}))
 	e.appendTranscript(t, typed("u3", "fix the bug"), assistant("u4", "m2", "text", "Let me look.", false), assistant("u5", "m2", "tool_use", "", false),
 		`{"type":"user","uuid":"u6","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}`)
 	go func() {
@@ -1151,7 +1160,7 @@ func TestReplyWrittenAfterIdleIsPostedForItsTurn(t *testing.T) {
 	}()
 	e.event(t, "pane.agent_status_changed", "w1:p1")
 	posts = e.mm.snapshot()
-	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "Fixed." || slices.ContainsFunc(posts, func(p post) bool { return p.Message == "Let me look." }) {
+	if last := posts[len(posts)-1]; last.RootID != root || last.Message != "@alice Fixed." || slices.ContainsFunc(posts, func(p post) bool { return p.Message == "Let me look." }) {
 		t.Fatalf("the final text must be posted as the reply: %+v", posts)
 	}
 

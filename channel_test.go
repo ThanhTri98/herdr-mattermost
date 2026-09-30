@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestOnePanePerChannel(t *testing.T) {
@@ -17,22 +20,25 @@ func TestOnePanePerChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := targets["w2:p1"]; ok || targets["w1:p1"].ID != "ch1" || targets["w1:p2"].ID != "ch2" {
-		t.Fatalf("the second pane on a channel must fall back to the DM: %+v", targets)
+		t.Fatalf("the second pane on a channel must lose it: %+v", targets)
 	}
 	opts, err := e.a.targetOptions("w1:p2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []target{{}, {"ch2", "Ops"}}; !slices.Equal(opts, want) {
-		t.Fatalf("picker for w1:p2 = %+v, want %+v (DM first, no DMs, not a channel another pane holds)", opts, want)
+	if want := []target{{"ch2", "Ops", true}}; !slices.Equal(opts, want) {
+		t.Fatalf("picker for w1:p2 = %+v, want %+v (no DMs, no Town Square or Off-Topic, not a channel another pane holds)", opts, want)
 	}
-	if err := e.a.retarget("w3:p1", target{"ch1", "Dev"}); err == nil || !strings.Contains(err.Error(), "channel Dev is linked to another pane") {
+	if got := e.a.targetName(opts[0]) + "|" + e.a.targetName(target{ID: "ch1", Name: "Dev"}) + "|" + e.a.targetName(target{}); got != "🔒 Ops|# Dev|Unlink the channel (stops mirroring)" {
+		t.Fatalf("labels = %q", got)
+	}
+	if err := e.a.retarget("w3:p1", target{ID: "ch1", Name: "Dev"}); err == nil || !strings.Contains(err.Error(), "channel Dev is linked to another pane") {
 		t.Fatalf("retarget to a taken channel = %v", err)
 	}
-	if err := e.a.retarget("w1:p1", target{}); err != nil { // back to the DM frees the channel
+	if err := e.a.retarget("w1:p1", target{}); err != nil { // unlinking frees the channel
 		t.Fatal(err)
 	}
-	if err := e.a.retarget("w3:p1", target{"ch1", "Dev"}); err != nil {
+	if err := e.a.retarget("w3:p1", target{ID: "ch1", Name: "Dev"}); err != nil {
 		t.Fatal(err)
 	}
 	e.event(t, "pane.closed", "w1:p2")
@@ -55,14 +61,14 @@ func TestRetargetStartsNewThreadWhenStopFails(t *testing.T) {
 	e.mm.mu.Lock()
 	e.mm.failPatch = true
 	e.mm.mu.Unlock()
-	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err == nil || !strings.Contains(err.Error(), "edit time limit") {
+	if err := e.a.retarget("w1:p1", target{"ch2", "Ops", true}); err == nil || !strings.Contains(err.Error(), "edit time limit") {
 		t.Fatalf("retarget = %v, want the edit error", err)
 	}
 	panes, err := e.a.readPanes()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := panes["w1:p1"]; p == nil || p.ChannelID != "ch1" {
+	if p := panes["w1:p1"]; p == nil || p.ChannelID != "ch2" {
 		t.Fatalf("the pane must be mirrored in the new channel even when stopping the old thread fails: %+v", panes)
 	}
 }
@@ -73,16 +79,11 @@ func TestChannelControl(t *testing.T) {
 	if err := e.a.toggle("w1:p1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
-		t.Fatal(err)
-	}
 	posts := e.mm.snapshot()
-	if len(posts) != 3 || posts[0].ChannelID != "dm" || !strings.Contains(posts[0].Message, "Mirroring stopped") ||
-		posts[1].ChannelID != "dm" || !strings.HasPrefix(posts[1].Message, "⚪ Mirroring stopped for") ||
-		posts[2].ChannelID != "ch1" || posts[2].RootID != "" || !strings.Contains(posts[2].Message, "@mention the bot in this channel") {
-		t.Fatalf("a retarget stops the DM thread and starts one in the channel: %+v", posts)
+	if len(posts) != 1 || posts[0].ChannelID != "ch1" || posts[0].RootID != "" || !strings.Contains(posts[0].Message, "@mention the bot in this channel") {
+		t.Fatalf("the pane's thread starts in its channel: %+v", posts)
 	}
-	root := posts[2].ID
+	root := posts[0].ID
 
 	for _, p := range []post{
 		{ID: "c1", ChannelID: "ch1", UserID: "alice-id", Message: "no mention, ignored", CreateAt: 101},
@@ -104,7 +105,7 @@ func TestChannelControl(t *testing.T) {
 		t.Fatalf("prompts = %q", got)
 	}
 	var got []string
-	for _, p := range e.mm.snapshot()[3:] {
+	for _, p := range e.mm.snapshot()[1:] {
 		got = append(got, p.ChannelID+"|"+p.RootID+"|"+p.Message)
 	}
 	ack := "📥 Received - the agent is working on it."
@@ -142,23 +143,19 @@ func TestChannelControl(t *testing.T) {
 func TestChannelCatchUp(t *testing.T) {
 	e := newTestEnv(t)
 	e.setAgent(t, "idle")
+	e.mm.add(post{ChannelID: "ch1", UserID: "alice-id", Message: "@herdr run the migration"}) // the pane's thread is not in ch1 yet
+	e.mm.add(post{ChannelID: "ch1", UserID: "bob-id", Message: "@herdr hi"})
 	if err := e.a.toggle("w1:p1"); err != nil {
 		t.Fatal(err)
 	}
-	handled := e.mm.snapshot()[0].CreateAt
-	e.mm.add(post{ChannelID: "ch1", UserID: "alice-id", Message: "@herdr run the migration"}) // ch1 is not linked yet
-	e.mm.add(post{ChannelID: "ch1", UserID: "bob-id", Message: "@herdr hi"})
-	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
-		t.Fatal(err)
-	}
 	e.mm.add(post{ChannelID: "ch1", UserID: "alice-id", Message: "@herdr run the tests"})
-	e.mm.add(post{ChannelID: "dm", UserID: "alice-id", Message: "hello"})
+	e.mm.add(post{ChannelID: "dm", UserID: "alice-id", Message: "hello"}) // DMs are not caught up
 	e.a.withState(func(panes map[string]*pane) error {
-		panes["w2:p1"] = &pane{ChannelID: "gone", RootID: "deleted"} // the bot cannot read it any more
+		panes["w2:p1"] = &pane{ChannelID: "gone", Channel: "Gone", RootID: "deleted"} // the bot cannot read it any more
 		return nil
 	})
 	n := len(e.mm.snapshot())
-	e.a.lastPost = handled // all of the above was sent while the WebSocket was down
+	e.a.lastPost = 0 // all of the above was sent while the WebSocket was down
 	if err := e.a.catchUp(); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +166,7 @@ func TestChannelCatchUp(t *testing.T) {
 	for _, p := range e.mm.snapshot()[n:] {
 		got = append(got, p.ChannelID+"|"+p.Message)
 	}
-	if want := []string{"ch1|" + catalog["en"]["prompt.late"], "dm|" + catalog["en"]["help"]}; !slices.Equal(got, want) {
+	if want := []string{"ch1|" + catalog["en"]["prompt.late"]}; !slices.Equal(got, want) {
 		t.Fatalf("answers = %q, want %q", got, want)
 	}
 }
@@ -212,25 +209,33 @@ func TestExecAndHelp(t *testing.T) {
 	e := mirroredEnv(t)
 	e.setAgent(t, "idle")
 	e.a.withState(func(panes map[string]*pane) error {
-		panes["w1:p2"] = &pane{RootID: "root2", ChannelID: "ch1", Status: "idle", Agent: "claude"}
+		panes["w1:p2"] = &pane{RootID: "root2", ChannelID: "ch2", Channel: "Ops", Status: "idle", Agent: "claude"}
 		return nil
 	})
-	help, usage, ack := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"]
+	help, usage, ack, list := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"], e.a.listPanes()
+	if !strings.Contains(list, "/_redirect/pl/root1") || !strings.Contains(list, "/_redirect/pl/root2") {
+		t.Fatalf("list = %q", list)
+	}
 	for _, c := range []struct {
 		p    post
 		want string // channel|root|answer
 	}{
-		{post{ID: "d1", ChannelID: "dm", RootID: "root1", Message: "#exec /clear"}, "dm|root1|" + ack},
-		{post{ID: "d2", ChannelID: "dm", RootID: "root1", Message: "#exec"}, "dm|root1|" + usage},
-		{post{ID: "d3", ChannelID: "dm", Message: "HELP"}, "dm||" + help},
-		{post{ID: "d4", ChannelID: "dm", Message: "@herdr help"}, "dm||" + help},
-		{post{ID: "d5", ChannelID: "dm", RootID: "root1", Message: "help"}, "dm|root1|" + ack}, // a bare help in a thread is a prompt
-		{post{ID: "d6", ChannelID: "dm", RootID: "root1", Message: "@herdr HELP"}, "dm|root1|" + help},
-		{post{ID: "c1", ChannelID: "ch1", Message: "@herdr #exec /compact"}, "ch1|c1|" + ack},
-		{post{ID: "c2", ChannelID: "ch1", RootID: "c1", Message: "@herdr help"}, "ch1|c1|" + help},
-		{post{ID: "c3", ChannelID: "ch1", Message: "help"}, ""}, // no mention in a channel: ignored
+		{post{ID: "c1", ChannelID: "ch1", RootID: "root1", Message: "@herdr #exec /clear"}, "ch1|root1|" + ack},
+		{post{ID: "c2", ChannelID: "ch1", RootID: "root1", Message: "@herdr #exec"}, "ch1|root1|" + usage},
+		{post{ID: "c3", ChannelID: "ch1", Message: "@herdr HELP"}, "ch1|c3|" + help},
+		{post{ID: "c4", ChannelID: "ch1", RootID: "root1", Message: "@herdr list"}, "ch1|root1|" + list},
+		{post{ID: "c5", ChannelID: "ch2", Message: "@herdr #exec /compact"}, "ch2|c5|" + ack},
+		{post{ID: "c6", ChannelID: "ch2", RootID: "c5", Message: "@herdr help"}, "ch2|c5|" + help},
+		{post{ID: "c7", ChannelID: "ch1", Message: "help"}, ""},        // no mention in a channel: ignored
+		{post{ID: "c8", ChannelID: "ch3", Message: "@herdr help"}, ""}, // no pane in ch3: help and list too are ignored
+		{post{ID: "c9", ChannelID: "ch3", RootID: "x", Message: "@herdr List"}, ""},
+		{post{ID: "c10", ChannelID: "ch3", Message: "@herdr fix it"}, ""},
+		{post{ID: "c11", ChannelID: "ch3", UserID: "bob-id", Message: "@herdr help"}, ""},
 	} {
-		c.p.UserID, c.p.CreateAt = "alice-id", int64(len(e.mm.snapshot())+1)*10
+		if c.p.UserID == "" {
+			c.p.UserID = "alice-id"
+		}
+		c.p.CreateAt = int64(len(e.mm.snapshot())+1) * 10
 		n := len(e.mm.snapshot())
 		if err := e.a.handleEvent(posted(c.p)); err != nil {
 			t.Fatal(err)
@@ -243,7 +248,7 @@ func TestExecAndHelp(t *testing.T) {
 			t.Errorf("%q: answer %q, want %q", c.p.Message, got, c.want)
 		}
 	}
-	if got := e.prompts(); got != "w1:p1|/clear\nw1:p1|help\nw1:p2|/compact\n" {
+	if got := e.prompts(); got != "w1:p1|/clear\nw1:p2|/compact\n" {
 		t.Fatalf("prompts = %q", got)
 	}
 }
@@ -257,9 +262,6 @@ func TestChannelCapture(t *testing.T) {
 	e.setAgent(t, "idle")
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("Context 12%\r\n"), 0o644)
 	if err := e.a.toggle("w1:p1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
 		t.Fatal(err)
 	}
 	n := len(e.mm.snapshot())
@@ -313,13 +315,13 @@ func TestPaneWithoutAgentKeepsItsChannelRow(t *testing.T) {
 	}
 	var out strings.Builder
 	e.a.status(&out, rows, 1)
-	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !strings.Contains(out.String(), "~Dev") {
+	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !strings.Contains(out.String(), "# Dev") {
 		t.Fatalf("popup:\n%s", out.String())
 	}
 	if err := e.a.retarget(rows[1].ID, target{}); err != nil {
 		t.Fatal(err)
 	}
-	if opts, _ := e.a.targetOptions("w1:p1"); !slices.Contains(opts, target{"ch1", "Dev"}) {
+	if opts, _ := e.a.targetOptions("w1:p1"); !slices.Contains(opts, target{ID: "ch1", Name: "Dev"}) {
 		t.Fatalf("freed channel not offered: %+v", opts)
 	}
 	if rows, _ = e.a.rows(); len(rows) != 1 {
@@ -333,9 +335,6 @@ func TestFreeChannelOfMirroredPaneWithoutAgent(t *testing.T) {
 	if err := e.a.toggle("w1:p1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
-		t.Fatal(err)
-	}
 	os.Remove(filepath.Join(e.herdrDir, "agent.json")) // Claude exits, the pane stays open as a shell
 	if err := e.a.retarget("w1:p1", target{}); err != nil {
 		t.Fatalf("freeing the channel = %v", err)
@@ -344,5 +343,180 @@ func TestFreeChannelOfMirroredPaneWithoutAgent(t *testing.T) {
 	targets, _ := e.a.readTargets()
 	if panes["w1:p1"] != nil || targets["w1:p1"].ID != "" {
 		t.Fatalf("the pane must be off and unlinked: panes %+v, targets %+v", panes, targets)
+	}
+}
+
+func TestUnlinkStopsMirroring(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.retarget("w1:p1", target{}); err != nil {
+		t.Fatal(err)
+	}
+	panes, _ := e.a.readPanes()
+	targets, _ := e.a.readTargets()
+	if len(panes) != 0 || len(targets) != 0 {
+		t.Fatalf("unlinking must stop mirroring and forget the channel: panes %+v, targets %+v", panes, targets)
+	}
+	posts := e.mm.snapshot()
+	if len(posts) != 2 || !strings.Contains(posts[0].Message, "Mirroring stopped") ||
+		posts[1].ChannelID != "ch1" || posts[1].RootID != "" || !strings.HasPrefix(posts[1].Message, "⚪ Mirroring stopped for") {
+		t.Fatalf("unlinking marks the root post and posts the stop notice in the old channel, and starts no thread: %+v", posts)
+	}
+}
+
+func TestToggleNeedsChannel(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	os.Remove(filepath.Join(e.a.stateDir, "targets.json"))
+	if err := e.a.toggle("w1:p1"); err == nil || err.Error() != catalog["en"]["toggle.nochannel"] {
+		t.Fatalf("toggle without a channel = %v", err)
+	}
+	if posts := e.mm.snapshot(); len(posts) != 0 {
+		t.Fatalf("posted without a channel: %+v", posts)
+	}
+}
+
+// TestDMPaneSwitchedOff reads a pane mirrored to the DM, as saved before channels were the only place,
+// as off, without posting anything.
+func TestDMPaneSwitchedOff(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	os.WriteFile(filepath.Join(e.a.stateDir, "panes.json"), []byte(`{"w1:p1":{"root_id":"old","channel_id":"dm","status":"idle"},
+		"w1:p2":{"root_id":"r2","channel_id":"ch2","channel":"Ops","status":"idle"}}`), 0o600)
+	panes, err := e.a.readPanes()
+	if err != nil || len(panes) != 1 || panes["w1:p2"] == nil {
+		t.Fatalf("panes = %+v %v", panes, err)
+	}
+	if err := e.a.toggle("w1:p1"); err != nil { // switches it on, in its channel
+		t.Fatal(err)
+	}
+	if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].ChannelID != "ch1" || posts[0].RootID != "" {
+		t.Fatalf("posts = %+v", posts)
+	}
+}
+
+func TestDMRefused(t *testing.T) {
+	e := mirroredEnv(t)
+	refused := catalog["en"]["dm.refused"]
+	for _, p := range []post{
+		{ID: "d1", ChannelID: "dm", UserID: "alice-id", Message: "fix the bug", CreateAt: 1},
+		{ID: "d2", ChannelID: "dm", RootID: "d1", UserID: "alice-id", Message: "@herdr list", CreateAt: 2},
+		{ID: "d3", ChannelID: "dm2", UserID: "bob-id", Message: "help", CreateAt: 3},
+	} {
+		e.a.handleEvent(postedIn(p, "D"))
+		e.a.handleEvent(postedIn(p, "D")) // delivered twice, answered once
+	}
+	var got []string
+	for _, p := range e.mm.snapshot() {
+		got = append(got, p.ChannelID+"|"+p.RootID+"|"+p.Message)
+	}
+	if want := []string{"dm||" + refused, "dm|d1|" + refused, "dm2||" + refused}; !slices.Equal(got, want) {
+		t.Fatalf("answers = %q, want %q", got, want)
+	}
+	if got := e.prompts(); got != "" {
+		t.Fatalf("a DM was typed into an agent: %q", got)
+	}
+}
+
+// TestPopupPicksChannelBeforeMirroring drives the status popup: Enter on a pane with no channel opens the
+// picker, which lists only the bot's channels, labelled, and mirrors the pane once one is picked; t then
+// offers the unlink line, which stops mirroring.
+func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
+	e := newTestEnv(t)
+	t.Cleanup(func() { e.a.stop() }) // the toggle starts a daemon; stopped before the fake Mattermost closes
+	e.setAgent(t, "idle")
+	os.Remove(filepath.Join(e.a.stateDir, "targets.json"))
+	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"result":{"agents":[{"pane_id":"w1:p1","agent":"claude","agent_status":"idle"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1}]}}`), 0o644)
+	os.WriteFile(e.a.envPath, []byte("MM_URL="+e.a.mmURL+"\nMM_BOT_TOKEN=tok\nMM_USER=alice\n"), 0o600)
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "status")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir,
+		"HERDR_BIN_PATH="+e.a.herdrBin, "CLAUDE_CONFIG_DIR="+e.a.claudeDir, "HOME="+home, "XDG_CONFIG_HOME="+home, "XDG_STATE_HOME="+home, "XDG_DATA_HOME="+home)
+	stdin, _ := cmd.StdinPipe()
+	stdout, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	var mu sync.Mutex
+	var out strings.Builder
+	go func() {
+		b := make([]byte, 4096)
+		for {
+			n, err := stdout.Read(b)
+			mu.Lock()
+			out.Write(b[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	from := 0
+	// screen waits until the output since the last screen holds want, and returns it.
+	screen := func(want string) string {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			mu.Lock()
+			s := out.String()[from:]
+			mu.Unlock()
+			if i := strings.Index(s, want); i >= 0 {
+				from += i + len(want)
+				return s[:i+len(want)]
+			}
+		}
+		t.Fatalf("popup never showed %q: %q", want, out.String()[from:])
+		return ""
+	}
+	wait := func(what string, ok func(map[string]*pane, map[string]target) bool) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			panes, _ := e.a.readPanes()
+			targets, _ := e.a.readTargets()
+			if ok(panes, targets) {
+				return
+			}
+		}
+		t.Fatalf("%s never happened", what)
+	}
+
+	screen("Press q or Esc to close.")
+	stdin.Write([]byte("\r"))
+	picker := screen("q or Esc to cancel.")
+	if !strings.Contains(picker, "Pick the channel to mirror api") || !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  🔒 Ops") ||
+		strings.Contains(picker, "Town Square") || strings.Contains(picker, "Off-Topic") || strings.Contains(picker, "alice") || strings.Contains(picker, "Unlink") {
+		t.Fatalf("picker = %q", picker)
+	}
+	stdin.Write([]byte("\r"))
+	screen("Linking api to # Dev...")
+	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
+		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
+	})
+	screen("Press q or Esc to close.")
+
+	stdin.Write([]byte("t"))
+	if picker = screen("q or Esc to cancel."); !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  Unlink the channel (stops mirroring)") {
+		t.Fatalf("picker of a linked pane = %q", picker)
+	}
+	stdin.Write([]byte("jj\r"))
+	if s := screen("Unlinking the channel of api..."); strings.Contains(s, "Linking api to") {
+		t.Fatalf("unlinking shows the linking line: %q", s)
+	}
+	wait("unlinking", func(panes map[string]*pane, targets map[string]target) bool {
+		return len(panes) == 0 && len(targets) == 0
+	})
+	if !slices.ContainsFunc(e.mm.snapshot(), func(p post) bool {
+		return p.ChannelID == "ch1" && p.RootID == "" && strings.HasPrefix(p.Message, "⚪ Mirroring stopped for")
+	}) {
+		t.Fatalf("no stop notice in the old channel: %+v", e.mm.snapshot())
+	}
+	stdin.Write([]byte("q"))
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("popup exit = %v", err)
 	}
 }

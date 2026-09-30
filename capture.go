@@ -26,10 +26,10 @@ import (
 	"golang.org/x/text/width"
 )
 
-// captureCmd reports whether a thread reply asks for a screenshot, and the text to type first.
+// captureCmd reports whether a post asks for a screenshot, and the text to type first.
 func captureCmd(msg string) (string, bool) { return prefixCmd(msg, "#capture") }
 
-// execCmd reports whether a thread reply asks to type the rest as is, such as a "/clear" that
+// execCmd reports whether a post asks to type the rest as is, such as a "/clear" that
 // Mattermost would otherwise take as its own slash command.
 func execCmd(msg string) (string, bool) { return prefixCmd(msg, "#exec") }
 
@@ -51,10 +51,9 @@ var (
 // escCommands are the slash commands whose panel stays open until Esc.
 var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true}
 
-// capture posts a screenshot of the pane mirrored in the DM thread rootID, or linked to channelID, into
-// that thread once the agent is blocked, or is not working and the screen has settled. After one of
-// escCommands it presses Esc to close the panel Claude leaves open, but only when herdr reports the agent
-// idle or done.
+// capture posts a screenshot of the pane linked to channelID into the thread rootID once the agent is
+// blocked, or is not working and the screen has settled. After one of escCommands it presses Esc to close
+// the panel Claude leaves open, but only when herdr reports the agent idle or done.
 func (a *app) capture(channelID, rootID, cmd string) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -63,7 +62,7 @@ func (a *app) capture(channelID, rootID, cmd string) {
 	}
 	var id string
 	for pid, p := range panes {
-		if channelID == a.dmID && p.RootID == rootID || channelID != a.dmID && p.ChannelID == channelID {
+		if p.ChannelID == channelID {
 			id = pid
 		}
 	}
