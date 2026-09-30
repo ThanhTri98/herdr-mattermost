@@ -833,7 +833,11 @@ func (a *app) retarget(id string, to target) error {
 	if err != nil || !changed || !mirrored {
 		return err
 	}
-	return errors.Join(a.toggle(id), a.toggle(id))
+	stop, start := a.toggle(id), a.toggle(id)
+	if he := (*herdrError)(nil); errors.As(start, &he) && he.Code == "agent_not_found" {
+		start = nil
+	}
+	return errors.Join(stop, start)
 }
 
 // readPanes loads panes.json. withState replaces it by rename, so it is never read half written.

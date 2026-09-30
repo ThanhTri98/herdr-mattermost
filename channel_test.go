@@ -326,3 +326,23 @@ func TestPaneWithoutAgentKeepsItsChannelRow(t *testing.T) {
 		t.Fatalf("pane with no agent and no channel still listed: %+v", rows)
 	}
 }
+
+func TestFreeChannelOfMirroredPaneWithoutAgent(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(e.herdrDir, "agent.json")) // Claude exits, the pane stays open as a shell
+	if err := e.a.retarget("w1:p1", target{}); err != nil {
+		t.Fatalf("freeing the channel = %v", err)
+	}
+	panes, _ := e.a.readPanes()
+	targets, _ := e.a.readTargets()
+	if panes["w1:p1"] != nil || targets["w1:p1"].ID != "" {
+		t.Fatalf("the pane must be off and unlinked: panes %+v, targets %+v", panes, targets)
+	}
+}
