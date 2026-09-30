@@ -109,7 +109,7 @@ func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
 	}
 	t.Cleanup(func() { cmd.Process.Kill() })
 	var out []byte
-	for !strings.Contains(string(out), "Press q or Esc to close.") {
+	for !strings.Contains(string(out), "q or Esc: close") {
 		b := make([]byte, 256)
 		n, err := stdout.Read(b)
 		if err != nil {
