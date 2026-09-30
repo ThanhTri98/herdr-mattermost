@@ -364,8 +364,9 @@ func (a *app) popupToggle(r row) string {
 }
 
 // pickTarget lists the bot's channels not linked to another pane, and an unlink line when the pane has
-// a channel, and links the pane to the one picked with Enter, asks for that channel's whitelist, then
-// mirrors the pane when mirror is set; q or Esc cancels. It returns the error to show, if any.
+// a channel, and links the pane to the one picked with Enter, asks for that channel's whitelist, then,
+// once it is saved, mirrors the pane when mirror is set; q or Esc cancels. It returns the error to show,
+// if any.
 func (a *app) pickTarget(r row, mirror bool) string {
 	fmt.Printf("\n\n"+a.t("picker.loading"), r.Name)
 	opts, err := a.targetOptions(r.ID)
