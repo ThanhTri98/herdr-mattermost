@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -262,10 +263,13 @@ func (a *app) targetName(t target) string {
 	return "# " + t.Name
 }
 
+// keyboard reads the popup's keys, shared by its screens so none loses keys another has buffered.
+var keyboard = bufio.NewReader(os.Stdin)
+
 // readKeys reads the next keys typed; keys typed quickly arrive in one read. A lone Esc is "\x1b".
 func readKeys() ([]string, error) {
 	b := make([]byte, 16)
-	n, err := os.Stdin.Read(b)
+	n, err := keyboard.Read(b)
 	if err != nil {
 		return nil, err
 	}
@@ -360,8 +364,9 @@ func (a *app) popupToggle(r row) string {
 }
 
 // pickTarget lists the bot's channels not linked to another pane, and an unlink line when the pane has
-// a channel, and links the pane to the one picked with Enter, asks for that channel's whitelist, then
-// mirrors the pane when mirror is set; q or Esc cancels. It returns the error to show, if any.
+// a channel, and links the pane to the one picked with Enter, asks for that channel's whitelist, then,
+// once it is saved, mirrors the pane when mirror is set; q or Esc cancels. It returns the error to show,
+// if any.
 func (a *app) pickTarget(r row, mirror bool) string {
 	fmt.Printf("\n\n"+a.t("picker.loading"), r.Name)
 	opts, err := a.targetOptions(r.ID)

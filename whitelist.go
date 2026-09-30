@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // member is a Mattermost user on a channel's whitelist: the bot obeys them in that channel.
@@ -84,45 +85,105 @@ func (a *app) resolveUsers(names []string) ([]member, error) {
 	return out, nil
 }
 
-// editWhitelist asks on w for the whitelist of a channel and reads it from r, comma or space separated,
-// then saves it. An empty answer keeps the current list and "-" empties it.
-func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) error {
+// editWhitelist edits on w the whitelist of a channel, prefilled with the current one, with keys read
+// from r, and saves the names typed, comma or space separated; an empty line empties it. A name already
+// on the list keeps its member, so only added names are looked up. Esc leaves it unchanged and returns
+// false.
+func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) (bool, error) {
 	lists, err := a.readWhitelists()
 	if err != nil {
-		return err
+		return false, err
 	}
-	fmt.Fprintf(w, a.t("whitelist.prompt"), a.targetName(t))
-	line, err := r.ReadString('\n')
-	if err != nil && (line == "" || !errors.Is(err, io.EOF)) {
-		return err
+	line, ok, err := readLine(r, w, fmt.Sprintf(a.t("whitelist.prompt"), a.targetName(t)), usernames(lists[t.ID], len(lists[t.ID])))
+	if !ok || err != nil {
+		return false, err
 	}
-	switch line = strings.TrimSpace(line); line {
-	case "":
-		return nil
-	case "-":
+	names := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
+	for i, n := range names {
+		names[i] = strings.TrimPrefix(n, "@")
+	}
+	slices.Sort(names)
+	if names = slices.Compact(slices.DeleteFunc(names, func(n string) bool { return n == "" })); len(names) == 0 {
 		delete(lists, t.ID)
-	default:
-		names := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })
-		for i, n := range names {
-			names[i] = strings.TrimPrefix(n, "@")
+	} else {
+		var ms []member
+		var added []string
+		for _, n := range names {
+			if i := slices.IndexFunc(lists[t.ID], func(m member) bool { return strings.EqualFold(m.Username, n) }); i >= 0 {
+				ms = append(ms, lists[t.ID][i])
+			} else {
+				added = append(added, n)
+			}
 		}
-		slices.Sort(names)
-		ms, err := a.resolveUsers(slices.Compact(slices.DeleteFunc(names, func(n string) bool { return n == "" })))
-		if err != nil {
-			return err
+		if len(added) > 0 {
+			found, err := a.resolveUsers(added)
+			if err != nil {
+				return false, err
+			}
+			ms = append(ms, found...)
+			slices.SortFunc(ms, func(x, y member) int { return strings.Compare(x.Username, y.Username) })
 		}
 		lists[t.ID] = ms
 	}
-	return writeFile(filepath.Join(a.stateDir, "whitelists.json"), lists)
+	return true, writeFile(filepath.Join(a.stateDir, "whitelists.json"), lists)
 }
 
-// whitelistScreen asks for a channel's whitelist in the popup and returns the message to show.
+// readLine edits line after prompt on the raw terminal w, with keys read from r: text is typed at the
+// cursor, Backspace deletes before it and Left and Right move it. Enter returns the line; Esc returns
+// false.
+func readLine(r *bufio.Reader, w io.Writer, prompt, line string) (string, bool, error) {
+	buf := []rune(line)
+	cur := len(buf)
+	for {
+		// The cursor is saved where it goes and restored after the rest, so a wrapped line still works.
+		fmt.Fprintf(w, "\x1b[H\x1b[2J%s%s\x1b7%s\x1b8", prompt, string(buf[:cur]), string(buf[cur:]))
+		c, _, err := r.ReadRune()
+		if err != nil {
+			return "", false, err
+		}
+		switch {
+		case c == '\r' || c == '\n':
+			return string(buf), true, nil
+		case c == 0x1b:
+			// A key's escape sequence arrives in one read; a lone Esc has nothing after it.
+			if r.Buffered() == 0 {
+				return "", false, nil
+			}
+			if b, _ := r.Peek(1); b[0] != '[' {
+				return "", false, nil
+			}
+			r.ReadByte()
+			var final byte
+			for r.Buffered() > 0 && (final < 0x40 || final > 0x7e) {
+				final, _ = r.ReadByte()
+			}
+			switch final {
+			case 'C':
+				cur = min(cur+1, len(buf))
+			case 'D':
+				cur = max(cur-1, 0)
+			}
+		case c == 0x7f || c == '\b':
+			if cur > 0 {
+				buf = slices.Delete(buf, cur-1, cur)
+				cur--
+			}
+		case unicode.IsPrint(c):
+			buf = slices.Insert(buf, cur, c)
+			cur++
+		}
+	}
+}
+
+// whitelistScreen edits a channel's whitelist in the popup and returns the message to show: none after
+// Esc.
 func (a *app) whitelistScreen(t target) string {
-	fmt.Print("\x1b[H\x1b[2J")
-	stty("icanon", "echo")
-	defer stty("-icanon", "-echo", "min", "1")
-	if err := a.editWhitelist(bufio.NewReader(os.Stdin), os.Stdout, t); err != nil {
+	saved, err := a.editWhitelist(keyboard, os.Stdout, t)
+	if err != nil {
 		return err.Error()
+	}
+	if !saved {
+		return ""
 	}
 	return a.t("whitelist.saved")
 }
