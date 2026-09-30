@@ -319,8 +319,8 @@ type listedAgent struct {
 	PaneID string `json:"pane_id"`
 }
 
-// rows lists the agent panes. It does not take state.lock, which a toggle or
-// event hook holds across Mattermost calls.
+// rows lists the agent panes and the open panes linked to a channel. It does not take state.lock, which a
+// toggle or event hook holds across Mattermost calls.
 func (a *app) rows() ([]row, error) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -364,9 +364,10 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// labels names every agent pane herdr reports, every open pane linked to a channel and every mirrored pane, numbered so a pane has the same
-// label in the popup and in every post; a mirrored pane herdr no longer lists keeps its last label. It
-// also returns herdr's agents and marks the panes to leave out of the popup.
+// labels names every agent pane herdr reports, every open pane linked to a channel and every mirrored
+// pane, numbered so a pane has the same label in the popup and in every post; a mirrored pane herdr no
+// longer lists keeps its last label. It also returns herdr's agents, plus a noagent entry for each open
+// pane linked to a channel with no agent, and marks the panes to leave out of the popup.
 func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]bool, []listedAgent, error) {
 	var r struct {
 		Result struct {
