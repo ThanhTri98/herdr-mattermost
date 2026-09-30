@@ -129,7 +129,8 @@ func (a *app) start() error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	return cmd.Process.Release()
+	go cmd.Wait() // reap it if it exits first, so a long-lived popup does not see a zombie as running
+	return nil
 }
 
 func (a *app) daemon() error {

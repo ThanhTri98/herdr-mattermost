@@ -435,6 +435,18 @@ func TestRestartKey(t *testing.T) {
 	if got[1] != "🔴 herdr-mm disconnected" || got[2] != "🟢 herdr-mm connected" || e.a.daemonPid() == pid || e.a.daemonPid() == 0 {
 		t.Fatalf("cards = %q, pid %d -> %d", got, pid, e.a.daemonPid())
 	}
+	// Stopped from outside, the daemon the popup started must not linger as a zombie that reads as running.
+	if err := e.a.stop(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; e.a.daemonPid() != 0; i++ {
+		if i == 500 {
+			t.Fatalf("stopped daemon %d still reads as running", e.a.daemonPid())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stdin.Write([]byte("k")) // redraw
+	waitOut("Mattermost daemon: not running", 2)
 	stdin.Write([]byte("q"))
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("popup exit = %v", err)
