@@ -5,7 +5,7 @@
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
-//	herdr-mm status  popup pane: list agent panes, toggle the selected one, pick its channel, edit the settings, close on q or Esc
+//	herdr-mm status  popup pane: list agent panes, toggle the selected one, pick its channel, edit the settings, restart the daemon, close on q or Esc
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -149,6 +150,14 @@ func (a *app) daemon() error {
 	if err := a.requireMM(); err != nil {
 		return err
 	}
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM)
+	go func() {
+		<-term
+		a.stoppedNotice()
+		signal.Reset(syscall.SIGTERM)
+		syscall.Kill(os.Getpid(), syscall.SIGTERM) // exit as terminated, as before
+	}()
 	if err := a.connectRetry(); err != nil {
 		return err
 	}
@@ -157,7 +166,9 @@ func (a *app) daemon() error {
 		a.lastPost = n // otherwise catch-up starts at each pane's root post
 	}
 	log.Print("daemon started")
-	return a.listen()
+	err = a.listen()
+	a.stoppedNotice()
+	return err
 }
 
 // stop ends the running daemon and waits for it to release its lock.
@@ -183,6 +194,14 @@ func (a *app) stop() error {
 	}
 	fmt.Println("daemon stopped")
 	return nil
+}
+
+// restart stops the running daemon, if any, and starts a new one.
+func (a *app) restart() error {
+	if err := a.stop(); err != nil {
+		return err
+	}
+	return a.start()
 }
 
 // daemonPid returns the pid of the running daemon, or 0. It does not take the lock, which would make

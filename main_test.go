@@ -339,3 +339,112 @@ func TestDaemonOutlivesHerdrUpdate(t *testing.T) {
 		t.Fatalf("prompts = %q", got)
 	}
 }
+
+// startDaemon runs the real daemon against the test env and waits until it holds its lock.
+func startDaemon(t *testing.T, e *testEnv) *exec.Cmd {
+	t.Helper()
+	os.WriteFile(e.a.envPath, []byte("MM_URL="+e.a.mmURL+"\nMM_BOT_TOKEN=tok\n"), 0o600)
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "daemon")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir,
+		"HERDR_BIN_PATH="+e.a.herdrBin, "HOME="+home, "XDG_CONFIG_HOME="+home, "XDG_STATE_HOME="+home, "XDG_DATA_HOME="+home)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	return cmd
+}
+
+// cards returns the titles of the notices posted in Town Square.
+func cards(mm *fakeMM) []string {
+	var out []string
+	for _, p := range mm.snapshot() {
+		if p.ChannelID == "ts" {
+			out = append(out, fmt.Sprint(p.Props["attachments"].([]any)[0].(map[string]any)["title"]))
+		}
+	}
+	return out
+}
+
+func waitCards(t *testing.T, mm *fakeMM, n int) []string {
+	t.Helper()
+	for i := 0; len(cards(mm)) < n; i++ {
+		if i == 500 {
+			t.Fatalf("cards = %q, want %d", cards(mm), n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cards(mm)
+}
+
+func TestStopPostsDisconnect(t *testing.T) {
+	e := newTestEnv(t)
+	cmd := startDaemon(t, e)
+	waitCards(t, e.mm, 1)
+	if err := e.a.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil || !strings.Contains(err.Error(), "terminated") {
+		t.Fatalf("daemon exit = %v, want terminated", err)
+	}
+	got := cards(e.mm)
+	if got[len(got)-1] != "🔴 herdr-mm disconnected" || slices.Index(got, "🔴 herdr-mm disconnected") != len(got)-1 {
+		t.Fatalf("cards = %q, want one disconnect card, last", got)
+	}
+	host, _ := os.Hostname()
+	p := e.mm.snapshot()[len(e.mm.snapshot())-1]
+	att := p.Props["attachments"].([]any)[0].(map[string]any)
+	f := att["fields"].([]any)
+	if att["color"] != "#e01e5a" || att["fallback"] != "🔴 herdr-mm disconnected · "+host || len(f) != 1 || f[0].(map[string]any)["value"] != "`"+host+"`" || p.Message != "" || p.RootID != "" {
+		t.Fatalf("disconnect card = %+v", p)
+	}
+}
+
+func TestRestartKey(t *testing.T) {
+	e := newTestEnv(t)
+	t.Cleanup(func() { e.a.stop() })
+	os.WriteFile(e.a.envPath, []byte("MM_URL="+e.a.mmURL+"\nMM_BOT_TOKEN=tok\n"), 0o600)
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "status")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir,
+		"HERDR_BIN_PATH="+e.a.herdrBin, "HOME="+home, "XDG_CONFIG_HOME="+home, "XDG_STATE_HOME="+home, "XDG_DATA_HOME="+home)
+	stdin, _ := cmd.StdinPipe()
+	var out safeBuf
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill() })
+	waitOut := func(want string, n int) {
+		t.Helper()
+		for i := 0; strings.Count(out.String(), want) < n; i++ {
+			if i == 1000 {
+				t.Fatalf("popup never showed %q %d times: %q", want, n, out.String())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitOut("- r: restart the daemon", 1)
+	stdin.Write([]byte("r")) // no daemon running: starts one
+	waitOut("Daemon restarted.", 1)
+	waitCards(t, e.mm, 1)
+	pid := e.a.daemonPid()
+	stdin.Write([]byte("r"))
+	waitOut("Daemon restarted.", 2)
+	got := waitCards(t, e.mm, 3)
+	if got[1] != "🔴 herdr-mm disconnected" || got[2] != "🟢 herdr-mm connected" || e.a.daemonPid() == pid || e.a.daemonPid() == 0 {
+		t.Fatalf("cards = %q, pid %d -> %d", got, pid, e.a.daemonPid())
+	}
+	stdin.Write([]byte("q"))
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("popup exit = %v", err)
+	}
+}
+
+type safeBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
+func (s *safeBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }

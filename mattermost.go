@@ -325,6 +325,19 @@ func (a *app) reconnectedNotice(down, up time.Time) post {
 	return a.noticePost("#ecb22e", "notice.reconnected", "notice.down", fmt.Sprintf("%s → %s (%s)", down.Format(clock), up.Format(clock), d))
 }
 
+// stoppedNotice posts the disconnect notice as the daemon exits, giving up after a few seconds so it
+// never holds up a stop; nothing is posted when Mattermost cannot be reached.
+func (a *app) stoppedNotice() {
+	done := make(chan struct{})
+	go func() { a.notice(a.noticePost("#e01e5a", "notice.stopped")); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(stopNoticeWait):
+	}
+}
+
+var stopNoticeWait = 3 * time.Second
+
 func (a *app) handleEvent(raw []byte) error {
 	var ev struct {
 		Event string

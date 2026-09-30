@@ -116,10 +116,7 @@ func (a *app) settingsScreen() string {
 	defer stty("-icanon", "-echo", "min", "1")
 	err := a.editSettings(bufio.NewReader(os.Stdin), os.Stdout)
 	if err == nil {
-		err = a.stop() // the next daemon reads the settings afresh
-	}
-	if err == nil {
-		err = a.start()
+		err = a.restart() // the next daemon reads the settings afresh
 	}
 	if err != nil {
 		return err.Error()
