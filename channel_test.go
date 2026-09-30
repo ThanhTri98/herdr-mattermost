@@ -110,7 +110,7 @@ func TestChannelControl(t *testing.T) {
 		got = append(got, p.ChannelID+"|"+p.RootID+"|"+p.Message)
 	}
 	ack := "📥 Received - the agent is working on it."
-	if want := []string{"ch1|c4|" + ack, "ch1|c4|" + ack, "ch1|" + root + "|" + ack, "ch1|c4|" + "@bob You are not allowed to call me."}; !slices.Equal(got, want) {
+	if want := []string{"ch1|c4|" + ack, "ch1|c4|" + ack, "ch1|" + root + "|" + ack, "ch1|c4|" + "@bob You are not allowed to call me"}; !slices.Equal(got, want) {
 		t.Fatalf("answers = %q, want %q", got, want)
 	}
 
@@ -122,7 +122,7 @@ func TestChannelControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts = e.mm.snapshot()
-	if len(posts) != n+1 || posts[n].Message != "@bob You are not allowed to call me." {
+	if len(posts) != n+1 || posts[n].Message != "@bob You are not allowed to call me" {
 		t.Fatalf("catch-up answers channel posts once: %+v", posts[n-1:])
 	}
 	e.a.handleEvent(posted(posts[n-1])) // the WebSocket delivering it too
@@ -286,7 +286,7 @@ func TestChannelCapture(t *testing.T) {
 		t.Fatalf("prompts = %q", got)
 	}
 	posts := e.mm.snapshot()
-	if posts[n].RootID != "t1" || posts[n].Message != "@bob You are not allowed to call me." ||
+	if posts[n].RootID != "t1" || posts[n].Message != "@bob You are not allowed to call me" ||
 		posts[n+1].ChannelID != "ch1" || posts[n+1].RootID != "c3" || !strings.HasPrefix(posts[n+1].Message, "📥") {
 		t.Fatalf("answers = %+v", posts[n:])
 	}
@@ -505,7 +505,7 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("picker = %q", picker)
 	}
 	stdin.Write([]byte("\r"))
-	if s := screen("comma or space separated: "); !strings.Contains(s, "Linking api to # Dev...") || !strings.Contains(s, "Whitelist of # Dev") || !strings.Contains(s, "Current whitelist: alice\n") {
+	if s := screen("comma or space separated: "); !strings.Contains(s, "Linking api to # Dev...") || !strings.Contains(s, "Whitelist of # Dev") || strings.Contains(s, "alice") {
 		t.Fatalf("whitelist prompt after the pick = %q", s)
 	}
 	stdin.Write([]byte("@Bob, carol bob\n"))
@@ -519,7 +519,7 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("saved whitelist = %+v", lists)
 	}
 	stdin.Write([]byte("w"))
-	screen("Current whitelist: bob, carol\nWhitelist of # Dev, the Mattermost usernames the bot obeys there, comma or space separated: ")
+	screen("Whitelist of # Dev, the Mattermost usernames the bot obeys there, comma or space separated: ")
 	stdin.Write([]byte("-\n"))
 	if s := screen("q or Esc: close"); !strings.Contains(s, "Whitelist saved.") || !regexp.MustCompile(`# Dev +empty\n`).MatchString(s) {
 		t.Fatalf("popup after emptying the whitelist = %q", s)
