@@ -321,13 +321,13 @@ func TestPaneWithoutAgentKeepsItsChannelRow(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 	var out strings.Builder
-	e.a.status(&out, rows, 1)
+	e.a.status(&out, rows, 1, 200)
 	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !regexp.MustCompile(`# Dev +alice\n`).MatchString(out.String()) {
 		t.Fatalf("popup:\n%s", out.String())
 	}
 	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte("{"), 0o600)
 	out.Reset()
-	if err := e.a.status(&out, rows, 1); err != nil || !strings.Contains(out.String(), "api #2") || !regexp.MustCompile(`# Dev +\?\n`).MatchString(out.String()) {
+	if err := e.a.status(&out, rows, 1, 200); err != nil || !strings.Contains(out.String(), "api #2") || !regexp.MustCompile(`# Dev +\?\n`).MatchString(out.String()) {
 		t.Fatalf("popup with an unreadable whitelists.json: %v\n%s", err, out.String())
 	}
 	if err := e.a.retarget(rows[1].ID, target{}); err != nil {
@@ -512,7 +512,7 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
 		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
 	})
-	if s := screen("q or Esc: close"); !regexp.MustCompile(`# Dev +bob, carol\n`).MatchString(s) || !strings.Contains(s, "- w: edit its channel's whitelist") {
+	if s := screen("q or Esc: close"); !regexp.MustCompile(`# Dev +bob \+1\n`).MatchString(s) || !strings.Contains(s, "Whitelist: bob, carol\n") || !strings.Contains(s, "- w: edit its channel's whitelist") {
 		t.Fatalf("popup after linking = %q", s)
 	}
 	if lists, _ := e.a.readWhitelists(); !slices.Equal(lists["ch1"], []member{{"bob-id", "bob"}, {"carol-id", "carol"}}) {

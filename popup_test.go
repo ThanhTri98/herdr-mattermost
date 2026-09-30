@@ -31,7 +31,7 @@ func TestListRows(t *testing.T) {
 func TestStatus(t *testing.T) {
 	e := newTestEnv(t)
 	var out strings.Builder
-	if err := e.a.status(&out, nil, 0); err != nil {
+	if err := e.a.status(&out, nil, 0, 80); err != nil {
 		t.Fatal(err)
 	}
 	if s := out.String(); !strings.Contains(s, "daemon: not running") || !strings.Contains(s, "No agent panes") {
@@ -61,7 +61,7 @@ func TestStatus(t *testing.T) {
 		t.Fatalf("rows = %q, want %q", names, want)
 	}
 	out.Reset()
-	if err := e.a.status(&out, rows, 0); err != nil {
+	if err := e.a.status(&out, rows, 0, 80); err != nil {
 		t.Fatal(err)
 	}
 	s := out.String()
@@ -138,5 +138,75 @@ func TestStatusPopupShowsErrorUntilQ(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("q did not close the popup")
+	}
+}
+
+func TestCellsCutWrap(t *testing.T) {
+	for s, want := range map[string]int{"abc": 3, "🔒 dev": 6, "Tiếng Việt": 10, "Tie\u0302\u0301ng": 5, "✅ xong": 7} {
+		if got := cells(s); got != want {
+			t.Errorf("cells(%q) = %d, want %d", s, got, want)
+		}
+	}
+	for _, c := range []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"🔒 herdr-mattermost", 10, "🔒 herdr-…"},
+		{"🔒 herdr", 2, "…"}, // the lock does not fit next to …
+		{"Trạng thái", 6, "Trạng…"},
+		{"short", 5, "short"},
+		{"x", 0, ""},
+	} {
+		if got := cut(c.s, c.n); got != c.want || cells(got) > c.n {
+			t.Errorf("cut(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+		}
+	}
+	got := wrap("tri_165139, an.nguyen, binh.tran, 🔒 herdr-mattermost-plugins-rat-dai", 16)
+	want := []string{"tri_165139,", "an.nguyen,", "binh.tran, 🔒", "herdr-mattermost", "-plugins-rat-dai"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wrap = %q, want %q", got, want)
+	}
+}
+
+func TestStatusFitsWidth(t *testing.T) {
+	e := newTestEnv(t)
+	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"ID":"1","Username":"tri_165139"},{"ID":"2","Username":"an.nguyen"},{"ID":"3","Username":"binh.tran"}]}`), 0o600)
+	e.a.switchLang() // Vietnamese, with its accented header
+	rows := []row{
+		{Name: "api", Agent: "claude", Status: "done", Mirrored: true, Target: target{ID: "ch1", Name: "herdr-mattermost-plugins-rat-dai", Private: true}},
+		{Name: "web", Agent: "claude", Status: "working"},
+	}
+	for width, want := range map[int]string{
+		64:  "🔒 herdr…  tri_16513…", // both cut, one cell at a time from the wider
+		76:  "🔒 herdr-mattermo…  tri_165139 +2",
+		200: "🔒 herdr-mattermost-plugins-rat-dai  tri_165139 +2",
+	} {
+		var out strings.Builder
+		if err := e.a.status(&out, rows, 0, width); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(out.String(), "\n")
+		for _, l := range lines {
+			if cells(l) > width {
+				t.Errorf("width %d: %q is %d cells", width, l, cells(l))
+			}
+		}
+		head, api := lines[2], lines[3]
+		if !strings.HasPrefix(head, "   TÊN") || !strings.HasSuffix(api, want) || strings.Contains(out.String(), "Tên:") || !strings.Contains(out.String(), "\n\n  Kênh:      🔒 herdr-mattermost-plugins-rat-dai") || !strings.Contains(out.String(), "Whitelist: tri_165139, an.nguyen, binh.tran") {
+			t.Fatalf("width %d:\n%s", width, out.String())
+		}
+	}
+	rows[0].Name = "firstmate-orchestrator / agents"
+	var cutName strings.Builder
+	e.a.status(&cutName, rows, 0, 76)
+	lines := strings.Split(cutName.String(), "\n")
+	if !strings.HasSuffix(lines[2], "KÊNH  WHITELIST") || !strings.HasPrefix(lines[3], ">  firstmate-orchestrat…  claude") || !strings.Contains(cutName.String(), "\n\n  Tên:       firstmate-orchestrator / agents\n  Kênh:      🔒 herdr-mattermost-plugins-rat-dai\n") {
+		t.Fatalf("name cut last:\n%s", cutName.String())
+	}
+	var out strings.Builder
+	e.a.status(&out, rows, 1, 80)
+	if strings.Contains(out.String(), "Kênh:") {
+		t.Fatalf("detail block for a row with no channel:\n%s", out.String())
 	}
 }
