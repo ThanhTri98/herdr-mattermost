@@ -72,15 +72,24 @@ type app struct {
 	heardAt                                              time.Time // when the WebSocket last heard from Mattermost
 }
 
+// herdrBinPath uses the path herdr hands plugins only while that file exists:
+// a herdr server left running after an update points at "/…/herdr (deleted)".
+func herdrBinPath(p string) string {
+	if p == "" {
+		return "herdr"
+	}
+	if _, err := os.Stat(p); err != nil {
+		return "herdr"
+	}
+	return p
+}
+
 func load() (*app, error) {
 	configDir, stateDir := os.Getenv("HERDR_PLUGIN_CONFIG_DIR"), os.Getenv("HERDR_PLUGIN_STATE_DIR")
 	if configDir == "" || stateDir == "" {
 		return nil, errors.New("HERDR_PLUGIN_CONFIG_DIR and HERDR_PLUGIN_STATE_DIR are not set; herdr-mm runs as a herdr plugin")
 	}
-	a := &app{envPath: filepath.Join(configDir, ".env"), settingsPath: filepath.Join(configDir, "settings.json"), stateDir: stateDir, herdrBin: os.Getenv("HERDR_BIN_PATH"), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
-	if a.herdrBin == "" {
-		a.herdrBin = "herdr"
-	}
+	a := &app{envPath: filepath.Join(configDir, ".env"), settingsPath: filepath.Join(configDir, "settings.json"), stateDir: stateDir, herdrBin: herdrBinPath(os.Getenv("HERDR_BIN_PATH")), claudeDir: os.Getenv("CLAUDE_CONFIG_DIR")}
 	if a.claudeDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
