@@ -29,7 +29,7 @@ The bot talks to Mattermost over REST and an outbound WebSocket, so it works fro
 
 ### 2. Install the plugin
 
-Go is optional. With Go 1.25 or newer on `PATH`, the install builds the plugin; without it, it downloads the prebuilt binary of the commit being installed, for Linux or macOS on x86_64 or ARM, from the repository's GitHub release for that commit. That release appears a minute or two after each merge to `main`, so an install in between stops and says to install Go 1.25+ or retry.
+Go is optional. With Go 1.25 or newer on `PATH`, the install builds the plugin; without it, it uses `curl` to download the prebuilt binary of the commit being installed, for Linux or macOS on x86_64 or ARM, from the repository's GitHub release for that commit. That release appears a minute or two after each merge to `main`, so an install in between stops and says to install Go 1.25+ or retry.
 
 ```sh
 herdr plugin install ThanhTri98/herdr-mattermost
