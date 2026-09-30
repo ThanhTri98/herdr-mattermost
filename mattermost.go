@@ -226,13 +226,19 @@ func (a *app) listenOnce() error {
 		return err
 	}
 	// ponytail: one post per connect, so a flapping network posts on every reconnect; rate limit if that bites.
-	a.notice(a.connectedMessage(a.connected))
+	if a.connected {
+		a.notice(a.reconnectedNotice(a.heardAt, now()))
+	} else {
+		a.notice(a.startedNotice())
+	}
 	a.connected = true
+	a.heardAt = now()
 
 	// Mattermost pings about every 60s; 2 minutes of silence means the connection is dead.
 	const readWait = 2 * time.Minute
 	conn.SetReadDeadline(time.Now().Add(readWait))
 	conn.SetPingHandler(func(data string) error {
+		a.heardAt = now()
 		conn.SetReadDeadline(time.Now().Add(readWait))
 		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(10*time.Second))
 	})
@@ -241,6 +247,7 @@ func (a *app) listenOnce() error {
 		if err != nil {
 			return err
 		}
+		a.heardAt = now()
 		conn.SetReadDeadline(time.Now().Add(readWait))
 		if err := a.handleEvent(msg); err != nil { // in order: handlePost dedupes by create_at
 			return err
@@ -290,13 +297,32 @@ func (a *app) postsSince(channelID, rootID string) ([]post, error) {
 	return slices.DeleteFunc(slices.Collect(maps.Values(list.Posts)), func(p post) bool { return p.CreateAt <= since }), nil
 }
 
-// connectedMessage announces a WebSocket connection: the daemon's first, or a reconnect after the
-// connection dropped.
-func (a *app) connectedMessage(reconnect bool) string {
-	if reconnect {
-		return a.t("reconnected")
+var now = time.Now // replaced by tests
+
+// noticePost builds a daemon notice: a colored attachment with a bold title and short fields, whose
+// fallback of title and hostname stands in for clients and notifications that do not render attachments.
+func (a *app) noticePost(color, titleKey string, fields ...string) post {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "?"
 	}
-	return a.t("connected")
+	title := a.t(titleKey)
+	fs := []map[string]any{{"title": a.t("notice.host"), "value": "`" + host + "`", "short": true}}
+	for i := 0; i+1 < len(fields); i += 2 {
+		fs = append(fs, map[string]any{"title": a.t(fields[i]), "value": fields[i+1], "short": true})
+	}
+	return post{Props: map[string]any{"attachments": []map[string]any{{"color": color, "title": title, "fallback": title + " · " + host, "fields": fs}}}}
+}
+
+func (a *app) startedNotice() post {
+	panes, _ := a.readPanes()
+	return a.noticePost("#2eb67d", "notice.started", "notice.panes", fmt.Sprintf(a.t("notice.panecount"), len(panes)))
+}
+
+func (a *app) reconnectedNotice(down, up time.Time) post {
+	const clock = "15:04:05 MST"
+	d := up.Round(0).Sub(down.Round(0)).Round(time.Second)
+	return a.noticePost("#ecb22e", "notice.reconnected", "notice.down", fmt.Sprintf("%s → %s (%s)", down.Format(clock), up.Format(clock), d))
 }
 
 func (a *app) handleEvent(raw []byte) error {
@@ -473,7 +499,7 @@ func (a *app) listPanes(channelID string) string {
 
 // notice posts into the Town Square of the bot's first team by name, where the daemon announces that it
 // connected.
-func (a *app) notice(msg string) {
+func (a *app) notice(p post) {
 	teams, err := a.teams()
 	var ch struct{ ID string }
 	if err == nil && len(teams) == 0 {
@@ -486,7 +512,10 @@ func (a *app) notice(msg string) {
 		log.Printf("notice: %v", err)
 		return
 	}
-	a.sayIn(ch.ID, "", msg)
+	p.ChannelID = ch.ID
+	if err := a.api(http.MethodPost, "/posts", p, nil); err != nil {
+		log.Printf("post: %v", err)
+	}
 }
 
 func (a *app) sayIn(channelID, rootID, msg string) {

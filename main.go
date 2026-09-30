@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -65,9 +66,10 @@ func main() {
 type app struct {
 	mmURL, token                                         string // from settings.json, then .env, in $HERDR_PLUGIN_CONFIG_DIR
 	envPath, settingsPath, stateDir, herdrBin, claudeDir string
-	botID, botName                                       string // filled by connect
-	lastPost                                             int64  // create_at of the last post the daemon handled
-	connected                                            bool   // the daemon's WebSocket has connected before
+	botID, botName                                       string    // filled by connect
+	lastPost                                             int64     // create_at of the last post the daemon handled
+	connected                                            bool      // the daemon's WebSocket has connected before
+	heardAt                                              time.Time // when the WebSocket last heard from Mattermost
 }
 
 func load() (*app, error) {

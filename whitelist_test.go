@@ -121,7 +121,7 @@ func TestProblemsTagAll(t *testing.T) {
 			}
 		}
 	}
-	for _, key := range []string{"connected", "reconnected", "prompt.received", "prompt.late"} {
+	for _, key := range []string{"notice.started", "notice.reconnected", "prompt.received", "prompt.late"} {
 		if strings.Contains(catalog["en"][key]+catalog["vi"][key], "@") {
 			t.Errorf("%s must not tag anyone", key)
 		}
