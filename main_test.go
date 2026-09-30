@@ -309,3 +309,33 @@ func TestHerdrBinPathFallsBackWhenMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonOutlivesHerdrUpdate runs the daemon as herdr does after herdr was updated without a restart:
+// HERDR_BIN_PATH names the deleted binary, so the reply caught up on start is typed by the herdr on PATH.
+func TestDaemonOutlivesHerdrUpdate(t *testing.T) {
+	e := newTestEnv(t)
+	e.mm.add(post{ChannelID: "ch1", UserID: "bot", Message: "root"})
+	e.mm.add(post{ChannelID: "ch1", RootID: "post1", UserID: "alice-id", Message: "@herdr hello"})
+	e.a.withState(func(panes map[string]*pane) error {
+		panes["w1:p1"] = &pane{RootID: "post1", ChannelID: "ch1", Channel: "Dev", Status: "idle", Agent: "claude"}
+		return nil
+	})
+	os.WriteFile(e.a.envPath, []byte("MM_URL="+e.a.mmURL+"\nMM_BOT_TOKEN=tok\n"), 0o600)
+	home := t.TempDir()
+	cmd := exec.Command(os.Args[0], "daemon")
+	cmd.Env = append(os.Environ(), "HERDR_MM_MAIN=1", "HERDR_PLUGIN_CONFIG_DIR="+filepath.Dir(e.a.envPath), "HERDR_PLUGIN_STATE_DIR="+e.a.stateDir,
+		"HERDR_BIN_PATH="+e.a.herdrBin+" (deleted)", "PATH="+e.herdrDir+":"+os.Getenv("PATH"), "CLAUDE_CONFIG_DIR="+e.a.claudeDir,
+		"HOME="+home, "XDG_CONFIG_HOME="+home, "XDG_STATE_HOME="+home, "XDG_DATA_HOME="+home)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	for deadline := time.Now().Add(10 * time.Second); e.prompts() == ""; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the reply was never typed; posts %+v", e.mm.snapshot())
+		}
+	}
+	if got := e.prompts(); got != "w1:p1|hello\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+}
