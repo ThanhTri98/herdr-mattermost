@@ -329,6 +329,11 @@ func (a *app) popup() {
 			case "s":
 				msg = a.settingsScreen()
 				break keys
+			case "r":
+				msg = a.t("popup.restarted")
+				if err := a.restart(); err != nil {
+					msg = err.Error()
+				}
 			case "l":
 				if err := a.switchLang(); err != nil {
 					msg = err.Error()
