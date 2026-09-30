@@ -31,7 +31,7 @@ var catalog = map[string]map[string]string{
 		"picker.unlink":    "Bỏ gắn kênh (dừng đẩy lên Mattermost)",
 		"picker.none":      "Bot chưa ở kênh nào còn trống. Thêm bot vào một kênh trong Mattermost rồi thử lại.",
 		"toggle.nochannel": "pane này chưa gắn kênh: mở popup trạng thái Mattermost, chọn pane và nhấn t để chọn kênh trước",
-		"dm.refused":       "Bot chỉ hoạt động trong kênh. Gắn một pane với kênh bằng phím t trong popup trạng thái Mattermost, rồi @mention bot trong kênh đó.",
+		"dm.refused":       "Bot chỉ hoạt động trong kênh. Mở popup trạng thái Mattermost, chọn một pane, nhấn t để chọn kênh rồi Enter để bắt đầu đẩy lên, sau đó @mention bot trong kênh đó.",
 		"picker.hint":      "↑/↓ hoặc j/k để di chuyển, Enter để chọn, q hoặc Esc để huỷ.",
 		"picker.linking":   "Đang gắn %s với %s...",
 		"picker.unlinking": "Đang bỏ gắn kênh của %s...",
@@ -42,7 +42,7 @@ var catalog = map[string]map[string]string{
 		"settings.set":     "đã có",
 		"settings.unset":   "chưa có",
 		"settings.saved":   "Đã lưu cài đặt và khởi động lại daemon.",
-		"help": "**Các lệnh hỗ trợ** (trong kênh gắn với một pane, viết sau @mention của bot, ở ngoài hay trong thread bất kỳ)\n" +
+		"help": "**Các lệnh hỗ trợ** (trong kênh có pane đang đẩy lên Mattermost, viết sau @mention của bot, ở ngoài hay trong thread bất kỳ)\n" +
 			"- Nội dung bất kỳ: gửi lệnh cho agent của kênh.\n" +
 			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`.\n" +
 			"- `#exec /command`: gõ đúng lệnh vào pane, không chụp màn hình, ví dụ gọi một skill, `/clear`, `/compact`.\n" +
@@ -88,7 +88,7 @@ var catalog = map[string]map[string]string{
 		"picker.unlink":    "Unlink the channel (stops mirroring)",
 		"picker.none":      "The bot is in no free channel. Add it to a channel in Mattermost and try again.",
 		"toggle.nochannel": "this pane has no channel: open the Mattermost status popup, select the pane and press t to pick one first",
-		"dm.refused":       "The bot only works in channels. Link a pane to a channel with t in the Mattermost status popup, then @mention the bot there.",
+		"dm.refused":       "The bot only works in channels. Open the Mattermost status popup, select a pane, press t to pick its channel and Enter to mirror it, then @mention the bot there.",
 		"picker.hint":      "↑/↓ or j/k to move, Enter to pick, q or Esc to cancel.",
 		"picker.linking":   "Linking %s to %s...",
 		"picker.unlinking": "Unlinking the channel of %s...",
@@ -99,7 +99,7 @@ var catalog = map[string]map[string]string{
 		"settings.set":     "set",
 		"settings.unset":   "not set",
 		"settings.saved":   "Settings saved and the daemon restarted.",
-		"help": "**Supported commands** (in a channel linked to a pane, after the bot's @mention, top-level or in any thread)\n" +
+		"help": "**Supported commands** (in a channel with a mirrored pane, after the bot's @mention, top-level or in any thread)\n" +
 			"- Anything else: prompt the channel's agent.\n" +
 			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`.\n" +
 			"- `#exec /command`: type exactly the command into the pane, without a screenshot, for example a skill, `/clear`, `/compact`.\n" +
