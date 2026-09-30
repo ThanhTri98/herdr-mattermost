@@ -96,7 +96,7 @@ func (a *app) editWhitelist(r *bufio.Reader, w io.Writer, t target) error {
 	if current == "" {
 		current = a.t("whitelist.none")
 	}
-	fmt.Fprintf(w, a.t("whitelist.prompt"), a.targetName(t), current)
+	fmt.Fprintf(w, a.t("whitelist.prompt"), current, a.targetName(t))
 	line, err := r.ReadString('\n')
 	if err != nil && (line == "" || !errors.Is(err, io.EOF)) {
 		return err
@@ -133,11 +133,8 @@ func (a *app) whitelistScreen(t target) string {
 }
 
 // refusal answers someone not on the channel's whitelist who mentioned the bot, mentioning them.
-func (a *app) refusal(userID string, empty bool) string {
+func (a *app) refusal(userID string) string {
 	msg := a.t("channel.refused")
-	if empty {
-		msg = a.t("channel.empty")
-	}
 	var u struct{ Username string }
 	if err := a.api(http.MethodGet, "/users/"+url.PathEscape(userID), nil, &u); err != nil || u.Username == "" {
 		log.Printf("refusal: user %s: %v", userID, err)

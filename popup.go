@@ -76,7 +76,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, a.t("popup.header"))
 	for i, r := range rows {
-		cursor, on := " ", ""
+		cursor, on := " ", a.t("popup.no")
 		if i == sel {
 			cursor = ">"
 		}

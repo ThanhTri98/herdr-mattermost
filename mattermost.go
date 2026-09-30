@@ -351,7 +351,7 @@ func (a *app) handlePost(p post, dm, late bool) error {
 	list := a.whitelist(p.ChannelID)
 	i := slices.IndexFunc(list, func(m member) bool { return m.ID == p.UserID })
 	if i < 0 {
-		a.sayIn(p.ChannelID, root, a.refusal(p.UserID, len(list) == 0))
+		a.sayIn(p.ChannelID, root, a.refusal(p.UserID))
 		return nil
 	}
 	asker := list[i].Username
