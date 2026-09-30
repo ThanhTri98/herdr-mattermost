@@ -4,7 +4,6 @@ name: release
 on:
   push:
     branches: [main]
-  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -28,7 +27,4 @@ jobs:
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        # a rerun of the same commit replaces the assets of its existing release
-        run: |
-          gh release create "build-$GITHUB_SHA" dist/* --target "$GITHUB_SHA" --title "build $GITHUB_SHA" --notes "Prebuilt herdr-mm for commit $GITHUB_SHA." \
-            || gh release upload "build-$GITHUB_SHA" dist/* --clobber
+        run: gh release create "build-$GITHUB_SHA" dist/* --target "$GITHUB_SHA" --title "build $GITHUB_SHA" --notes "Prebuilt herdr-mm for commit $GITHUB_SHA."

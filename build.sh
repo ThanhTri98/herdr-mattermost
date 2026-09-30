@@ -26,15 +26,11 @@ esac
 
 sha=$(git rev-parse HEAD)
 url="https://github.com/$repo/releases/download/build-$sha/herdr-mm-$os-$arch"
-if command -v curl >/dev/null 2>&1; then
-	fetch() { curl -fsSL -o herdr-mm.tmp "$url"; }
-elif command -v wget >/dev/null 2>&1; then
-	fetch() { wget -q -O herdr-mm.tmp "$url"; }
-else
-	echo "herdr-mm: no Go 1.25+, curl or wget; install Go 1.25+ to build it" >&2
+if ! command -v curl >/dev/null 2>&1; then
+	echo "herdr-mm: no Go 1.25+ or curl; install Go 1.25+ to build it, or curl to download it" >&2
 	exit 1
 fi
-if ! fetch; then
+if ! curl -fsSL -o herdr-mm.tmp "$url"; then
 	rm -f herdr-mm.tmp
 	echo "herdr-mm: no prebuilt binary for commit $sha ($os-$arch) at $url; install Go 1.25+, or retry once the release for this commit is published" >&2
 	exit 1
