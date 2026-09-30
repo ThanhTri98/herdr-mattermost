@@ -306,7 +306,7 @@ func (a *app) daemonPid() int {
 	return pid
 }
 
-// row is a pane herdr reports an agent in, listed in the status popup.
+// row is a pane herdr reports an agent in, or an open pane linked to a channel, listed in the status popup.
 type row struct {
 	ID, Name, Agent, Cwd, Status string
 	Mirrored                     bool
@@ -364,7 +364,7 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// labels names every agent pane herdr reports and every mirrored pane, numbered so a pane has the same
+// labels names every agent pane herdr reports, every open pane linked to a channel and every mirrored pane, numbered so a pane has the same
 // label in the popup and in every post; a mirrored pane herdr no longer lists keeps its last label. It
 // also returns herdr's agents and marks the panes to leave out of the popup.
 func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]bool, []listedAgent, error) {
@@ -393,7 +393,19 @@ func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]b
 	for id, p := range mirrored {
 		set[id] = cmp.Or(names[id], p.Name)
 	}
-	return numbered(set), hidden, r.Result.Agents, nil
+	// An open pane still linked to a channel is listed even with no agent, so the channel can be freed.
+	targets, err := a.readTargets()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	agents := r.Result.Agents
+	for id := range targets {
+		if _, open := names[id]; open && !slices.ContainsFunc(agents, func(ag listedAgent) bool { return ag.PaneID == id }) {
+			set[id] = names[id]
+			agents = append(agents, listedAgent{agentInfo{Status: "noagent"}, id})
+		}
+	}
+	return numbered(set), hidden, agents, nil
 }
 
 // label sets p.Name to the pane's label; a failed lookup keeps the last one.
@@ -1043,7 +1055,7 @@ func answered(rs []reply, turn []string, open bool) bool {
 	return !open && len(rs) > 0 && slices.Equal(rs[len(rs)-1].prompts, turn)
 }
 
-var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
+var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "noagent": "➖", "off": "⚪", "closed": "⚫"}
 
 func (a *app) rootMessage(p *pane) string {
 	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], a.t(p.Status), bold(p.Name), p.Agent, baseName(p.Cwd))
