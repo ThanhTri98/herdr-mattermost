@@ -119,16 +119,13 @@ func (a *app) send(req *http.Request, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// connect checks the bot token and looks up MM_USER.
+// connect checks the bot token and looks up the bot's own user.
 func (a *app) connect() error {
-	var me, user struct{ ID, Username string }
+	var me struct{ ID, Username string }
 	if err := a.api(http.MethodGet, "/users/me", nil, &me); err != nil {
 		return fmt.Errorf(a.t("err.login")+": %w", err)
 	}
-	if err := a.api(http.MethodGet, "/users/username/"+url.PathEscape(a.user), nil, &user); err != nil {
-		return fmt.Errorf("MM_USER %q: %w", a.user, err)
-	}
-	a.botID, a.botName, a.userID = me.ID, me.Username, user.ID
+	a.botID, a.botName = me.ID, me.Username
 	return nil
 }
 
@@ -322,11 +319,11 @@ func (a *app) handleEvent(raw []byte) error {
 
 var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 
-// handlePost obeys a post from MM_USER that @mentions the bot in a channel. In a channel linked to a
-// pane, the post, top-level or in any thread, prompts that pane and is answered in its thread; anyone
-// else who mentions the bot there is told only MM_USER is obeyed. There, the mention followed by "help"
-// gets the command list and followed by "list" the mirrored panes. A direct message, dm, gets one line
-// saying the bot works only in channels. late marks a post sent while the WebSocket was down.
+// handlePost obeys a post that @mentions the bot in a channel linked to a pane from a user on that
+// channel's whitelist. The post, top-level or in any thread, prompts that pane and is answered in its
+// thread; anyone else who mentions the bot there is told they are not allowed, and an empty whitelist
+// obeys nobody. There, the mention followed by "help" gets the command list and followed by "list" the
+// mirrored panes. A direct message, dm, gets one line saying the bot works only in channels. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, dm, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
@@ -350,10 +347,13 @@ func (a *app) handlePost(p post, dm, late bool) error {
 		a.sayIn(p.ChannelID, p.RootID, a.t("dm.refused"))
 		return nil
 	}
-	if p.UserID != a.userID {
-		a.sayIn(p.ChannelID, root, fmt.Sprintf(a.t("channel.refused"), a.user))
+	list := a.whitelist(p.ChannelID)
+	i := slices.IndexFunc(list, func(m member) bool { return m.ID == p.UserID })
+	if i < 0 {
+		a.sayIn(p.ChannelID, root, a.refusal(p.UserID, len(list) == 0))
 		return nil
 	}
+	asker := list[i].Username
 	if !a.pluginOn() {
 		a.sayIn(p.ChannelID, root, a.t("plugin.off"))
 		return errPluginOff
@@ -392,9 +392,10 @@ func (a *app) handlePost(p post, dm, late bool) error {
 				// Recorded before typing so the turn's end cannot beat it; marks the turn for posting.
 				pp.Prompted = append(pp.Prompted, text)
 				pp.Prompted = pp.Prompted[max(0, len(pp.Prompted)-5):]
-				// ponytail: the reply goes to the thread of the latest question, so a turn still
-				// answering an earlier question in another thread is posted there; record one per prompt if that bites.
-				pp.ReplyRoot = root
+				// ponytail: the reply goes to the thread of the latest question and mentions its asker, so a
+				// turn still answering an earlier question is posted there, tagging the latest asker; record
+				// them per prompt if that bites.
+				pp.ReplyRoot, pp.Asker = root, asker
 			}
 		}
 		return nil

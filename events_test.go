@@ -86,7 +86,7 @@ func TestStatusToPostFlow(t *testing.T) {
 		t.Fatalf("want one dialog post, got %+v", posts)
 	}
 	d := posts[3]
-	if d.RootID != posts[0].ID || !strings.HasPrefix(d.Message, "@alice") || !strings.Contains(d.Message, "Do you want to proceed?") || strings.Contains(d.Message, "earlier conversation") {
+	if d.RootID != posts[0].ID || !strings.HasPrefix(d.Message, "@all ✋ **claude** is waiting on a dialog") || !strings.Contains(d.Message, "Do you want to proceed?") || strings.Contains(d.Message, "earlier conversation") {
 		t.Fatalf("dialog post = %q", d.Message)
 	}
 
@@ -118,6 +118,7 @@ func TestReplyPostedWhenRootEditFails(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	json.Unmarshal(b, &state)
 	state["w1:p1"]["prompted"] = "go" // a single reply, as saved before prompted became a list
+	state["w1:p1"]["asker"] = "alice"
 	b, _ = json.Marshal(state)
 	os.WriteFile(path, b, 0o600)
 	e.appendTranscript(t, typed("u0", "go"), assistant("u1", "m1", "text", "Done.", false))

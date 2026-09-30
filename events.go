@@ -140,7 +140,10 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			// after a thread reply is posted by mistake, and one started from the thread that finishes after
 			// a terminal prompt is kept off. Record which turn started each background task if that bites.
 			if p.fromThread(r.prompts) {
-				text := "@" + a.user + " " + r.text // answers the asker, who can only be MM_USER
+				text := r.text
+				if p.Asker != "" { // answers the asker
+					text = "@" + p.Asker + " " + text
+				}
 				if _, err := a.createPost(p.ChannelID, cmp.Or(p.ReplyRoot, p.RootID), text); err != nil {
 					return err
 				}
@@ -157,7 +160,7 @@ func (a *app) postNews(id string, p *pane, info agentInfo) error {
 			return err
 		}
 		if d := dialog(string(screen)); d != p.LastDialog {
-			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", a.user, p.Agent, a.truncate(d, maxPost-500))
+			msg := fmt.Sprintf(a.t("dialog")+"\n```\n%s\n```", p.Agent, a.truncate(d, maxPost-500))
 			if _, err := a.createPost(p.ChannelID, cmp.Or(p.ReplyRoot, p.RootID), msg); err != nil {
 				return err
 			}

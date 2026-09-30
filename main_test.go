@@ -153,8 +153,8 @@ func TestConnectRetriesUntilMattermostAnswers(t *testing.T) {
 	retryDelay = time.Millisecond
 	e := newTestEnv(t)
 	e.mm.failLogin = 2
-	if err := e.a.connectRetry(); err != nil || e.a.userID != "alice-id" || e.mm.failLogin != 0 {
-		t.Fatalf("connectRetry = %v, user %q, logins left to fail %d", err, e.a.userID, e.mm.failLogin)
+	if err := e.a.connectRetry(); err != nil || e.a.botName != "herdr" || e.mm.failLogin != 0 {
+		t.Fatalf("connectRetry = %v, bot %q, logins left to fail %d", err, e.a.botName, e.mm.failLogin)
 	}
 	e.a.token = "wrong"
 	if err := e.a.connectRetry(); err == nil || !strings.Contains(err.Error(), "mattermost login failed") {
@@ -194,11 +194,11 @@ func TestStopEndsDaemon(t *testing.T) {
 
 func TestConfigErrors(t *testing.T) {
 	e := newTestEnv(t)
-	e.a.token, e.a.user = "", ""
-	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN, MM_USER: set it with s in the Mattermost status popup, or in ") {
+	e.a.token = ""
+	if err := e.a.requireMM(); err == nil || !strings.Contains(err.Error(), "missing MM_BOT_TOKEN: set it with s in the Mattermost status popup, or in ") {
 		t.Fatalf("requireMM = %v", err)
 	}
-	e.a.token, e.a.user = "wrong", "alice"
+	e.a.token = "wrong"
 	if err := e.a.connect(); err == nil || !strings.Contains(err.Error(), "mattermost login failed") {
 		t.Fatalf("connect = %v", err)
 	}

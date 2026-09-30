@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -109,7 +110,7 @@ func TestChannelControl(t *testing.T) {
 		got = append(got, p.ChannelID+"|"+p.RootID+"|"+p.Message)
 	}
 	ack := "📥 Received - the agent is working on it."
-	if want := []string{"ch1|c4|" + ack, "ch1|c4|" + ack, "ch1|" + root + "|" + ack, "ch1|c4|Only @alice can control this agent."}; !slices.Equal(got, want) {
+	if want := []string{"ch1|c4|" + ack, "ch1|c4|" + ack, "ch1|" + root + "|" + ack, "ch1|c4|" + "@bob You are not allowed to control this agent: you are not on this channel's whitelist."}; !slices.Equal(got, want) {
 		t.Fatalf("answers = %q, want %q", got, want)
 	}
 
@@ -121,7 +122,7 @@ func TestChannelControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	posts = e.mm.snapshot()
-	if len(posts) != n+1 || posts[n].Message != "Only @alice can control this agent." {
+	if len(posts) != n+1 || posts[n].Message != "@bob You are not allowed to control this agent: you are not on this channel's whitelist." {
 		t.Fatalf("catch-up answers channel posts once: %+v", posts[n-1:])
 	}
 	e.a.handleEvent(posted(posts[n-1])) // the WebSocket delivering it too
@@ -176,31 +177,34 @@ func TestSettingsPrecedence(t *testing.T) {
 	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", dir)
 	t.Setenv("HERDR_PLUGIN_STATE_DIR", dir)
 	os.WriteFile(filepath.Join(dir, ".env"), []byte("MM_URL=https://env.example\nMM_BOT_TOKEN=env-tok\nMM_USER=env-user\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"token":"saved-tok"}`), 0o600)
+	os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"token":"saved-tok","user":"old-user"}`), 0o600) // user is no longer read
 	a, err := load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.mmURL != "https://env.example" || a.token != "saved-tok" || a.user != "env-user" {
-		t.Fatalf("saved settings win, .env fills the rest: %q %q %q", a.mmURL, a.token, a.user)
+	if a.mmURL != "https://env.example" || a.token != "saved-tok" {
+		t.Fatalf("saved settings win, .env fills the rest: %q %q", a.mmURL, a.token)
 	}
 
 	var out strings.Builder
-	in := bufio.NewReader(strings.NewReader("https://saved.example/\nnew-secret\n\n"))
+	in := bufio.NewReader(strings.NewReader("https://saved.example/\nnew-secret\n"))
 	if err := a.editSettings(in, &out); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "new-secret") || strings.Contains(out.String(), "saved-tok") {
 		t.Fatalf("the token must never be printed: %q", out.String())
 	}
+	if strings.Contains(out.String(), "username") {
+		t.Fatalf("the settings no longer ask for a username: %q", out.String())
+	}
 	if fi, err := os.Stat(a.settingsPath); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("settings.json mode = %v %v", fi, err)
 	}
-	if a, err = load(); err != nil || a.mmURL != "https://saved.example" || a.token != "new-secret" || a.user != "env-user" {
-		t.Fatalf("after editing: %q %q %q %v", a.mmURL, a.token, a.user, err)
+	if a, err = load(); err != nil || a.mmURL != "https://saved.example" || a.token != "new-secret" {
+		t.Fatalf("after editing: %q %q %v", a.mmURL, a.token, err)
 	}
-	if s, _ := readSettings(a.settingsPath); s.User != "" {
-		t.Fatalf("an empty answer must not save the .env value: %+v", s)
+	if b, _ := os.ReadFile(a.settingsPath); strings.Contains(string(b), "user") {
+		t.Fatalf("the old username is dropped on save: %s", b)
 	}
 }
 
@@ -211,6 +215,7 @@ func TestExecAndHelp(t *testing.T) {
 		panes["w1:p2"] = &pane{RootID: "root2", ChannelID: "ch2", Channel: "Ops", Status: "idle", Agent: "claude"}
 		return nil
 	})
+	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"id":"alice-id","username":"alice"}],"ch2":[{"id":"alice-id","username":"alice"}]}`), 0o600)
 	help, usage, ack, list := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"], e.a.listPanes()
 	if !strings.Contains(list, "/_redirect/pl/root1") || !strings.Contains(list, "/_redirect/pl/root2") {
 		t.Fatalf("list = %q", list)
@@ -278,7 +283,7 @@ func TestChannelCapture(t *testing.T) {
 		t.Fatalf("prompts = %q", got)
 	}
 	posts := e.mm.snapshot()
-	if posts[n].RootID != "t1" || posts[n].Message != "Only @alice can control this agent." ||
+	if posts[n].RootID != "t1" || posts[n].Message != "@bob You are not allowed to control this agent: you are not on this channel's whitelist." ||
 		posts[n+1].ChannelID != "ch1" || posts[n+1].RootID != "c3" || !strings.HasPrefix(posts[n+1].Message, "📥") {
 		t.Fatalf("answers = %+v", posts[n:])
 	}
@@ -492,11 +497,25 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("picker = %q", picker)
 	}
 	stdin.Write([]byte("\r"))
-	screen("Linking api to # Dev...")
+	if s := screen("- empties it): "); !strings.Contains(s, "Linking api to # Dev...") || !strings.Contains(s, "Whitelist of # Dev") || !strings.Contains(s, "[alice]") {
+		t.Fatalf("whitelist prompt after the pick = %q", s)
+	}
+	stdin.Write([]byte("@Bob, carol bob\n"))
 	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
 		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
 	})
-	screen("q or Esc: close")
+	if s := screen("q or Esc: close"); !regexp.MustCompile(`# Dev +bob, carol\n`).MatchString(s) || !strings.Contains(s, "- w: edit its channel's whitelist") {
+		t.Fatalf("popup after linking = %q", s)
+	}
+	if lists, _ := e.a.readWhitelists(); !slices.Equal(lists["ch1"], []member{{"bob-id", "bob"}, {"carol-id", "carol"}}) {
+		t.Fatalf("saved whitelist = %+v", lists)
+	}
+	stdin.Write([]byte("w"))
+	screen("[bob, carol], - empties it): ")
+	stdin.Write([]byte("-\n"))
+	if s := screen("q or Esc: close"); !strings.Contains(s, "Whitelist saved.") || !regexp.MustCompile(`# Dev +empty\n`).MatchString(s) {
+		t.Fatalf("popup after emptying the whitelist = %q", s)
+	}
 
 	stdin.Write([]byte("t"))
 	if picker = screen("q or Esc: cancel"); !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  Unlink the channel (stops mirroring)") {

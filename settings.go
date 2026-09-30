@@ -16,7 +16,6 @@ import (
 type settings struct {
 	URL   string `json:"url,omitempty"`
 	Token string `json:"token,omitempty"`
-	User  string `json:"user,omitempty"`
 }
 
 func readSettings(path string) (settings, error) {
@@ -76,16 +75,10 @@ func (a *app) editSettings(r *bufio.Reader, w io.Writer) error {
 	if v != "" {
 		s.Token = v
 	}
-	if v, err = ask(fmt.Sprintf(a.t("settings.user"), a.user)); err != nil {
-		return err
-	}
-	if v != "" {
-		s.User = strings.TrimPrefix(v, "@")
-	}
 	if err := writeFile(a.settingsPath, s); err != nil {
 		return err
 	}
-	a.mmURL, a.token, a.user = strings.TrimRight(cmp.Or(s.URL, a.mmURL), "/"), cmp.Or(s.Token, a.token), cmp.Or(s.User, a.user)
+	a.mmURL, a.token = strings.TrimRight(cmp.Or(s.URL, a.mmURL), "/"), cmp.Or(s.Token, a.token)
 	return nil
 }
 
@@ -105,7 +98,7 @@ func readEnv(path string) (map[string]string, error) {
 
 func (a *app) requireMM() error {
 	var missing []string
-	for _, kv := range [][2]string{{"MM_URL", a.mmURL}, {"MM_BOT_TOKEN", a.token}, {"MM_USER", a.user}} {
+	for _, kv := range [][2]string{{"MM_URL", a.mmURL}, {"MM_BOT_TOKEN", a.token}} {
 		if kv[1] == "" {
 			missing = append(missing, kv[0])
 		}

@@ -1,4 +1,4 @@
-// herdr-mm mirrors opted-in herdr agent panes into Mattermost channels, one channel per pane, obeying one user.
+// herdr-mm mirrors opted-in herdr agent panes into Mattermost channels, one channel per pane, obeying the users whitelisted in each channel.
 //
 //	herdr-mm start   startup hook: launch the daemon detached (a second daemon exits at once)
 //	herdr-mm daemon  hold the Mattermost WebSocket and type @mentions of the bot into agents
@@ -63,9 +63,9 @@ func main() {
 }
 
 type app struct {
-	mmURL, token, user                                   string // from settings.json, then .env, in $HERDR_PLUGIN_CONFIG_DIR
+	mmURL, token                                         string // from settings.json, then .env, in $HERDR_PLUGIN_CONFIG_DIR
 	envPath, settingsPath, stateDir, herdrBin, claudeDir string
-	botID, botName, userID                               string // filled by connect
+	botID, botName                                       string // filled by connect
 	lastPost                                             int64  // create_at of the last post the daemon handled
 	connected                                            bool   // the daemon's WebSocket has connected before
 }
@@ -97,7 +97,6 @@ func load() (*app, error) {
 	// Saved settings win; .env fills the fields not saved.
 	a.mmURL = strings.TrimRight(cmp.Or(s.URL, env["MM_URL"]), "/")
 	a.token = cmp.Or(s.Token, env["MM_BOT_TOKEN"])
-	a.user = strings.TrimPrefix(cmp.Or(s.User, env["MM_USER"]), "@")
 	return a, nil
 }
 
@@ -146,7 +145,7 @@ func (a *app) daemon() error {
 	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil {
 		a.lastPost = n // otherwise catch-up starts at each pane's root post
 	}
-	log.Printf("daemon started: obeying @%s", a.user)
+	log.Print("daemon started")
 	return a.listen()
 }
 

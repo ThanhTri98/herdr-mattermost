@@ -25,6 +25,7 @@ type pane struct {
 	Prompted   recent `json:"prompted,omitempty"`    // posts last typed into the agent
 	Channel    string `json:"channel,omitempty"`     // name of the channel the thread is in; "" was the DM, no longer supported
 	ReplyRoot  string `json:"reply_root,omitempty"`  // the thread of the last question typed in
+	Asker      string `json:"asker,omitempty"`       // username of who asked the last question typed in
 }
 
 // recent is the last few posts typed into a pane, oldest first. panes.json written before
