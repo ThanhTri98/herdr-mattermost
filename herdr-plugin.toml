@@ -26,7 +26,7 @@ title = "Show Mattermost status"
 description = "Open a popup listing the agent panes, to toggle their mirroring and pick their channel, and whether the daemon runs"
 contexts = ["global", "workspace", "pane"]
 # herdr's popup is a singleton, so opening it twice is not an error
-command = ["sh", "-c", "out=$(\"${HERDR_BIN_PATH:-herdr}\" plugin pane open --plugin herdr-mattermost --entrypoint status 2>&1) || case $out in *'already open'*) ;; *) echo \"$out\" >&2; exit 1 ;; esac"]
+command = ["sh", "-c", "h=herdr; [ -f \"$HERDR_BIN_PATH\" ] && [ -x \"$HERDR_BIN_PATH\" ] && h=$HERDR_BIN_PATH; out=$(\"$h\" plugin pane open --plugin herdr-mattermost --entrypoint status 2>&1) || case $out in *'already open'*) ;; *) echo \"$out\" >&2; exit 1 ;; esac"]
 
 [[actions]]
 id = "toggle"

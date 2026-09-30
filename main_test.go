@@ -297,3 +297,15 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("vi connect = %v", err)
 	}
 }
+
+func TestHerdrBinPathFallsBackWhenMissing(t *testing.T) {
+	existing := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(existing, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{"": "herdr", existing + " (deleted)": "herdr", "/nonexistent/herdr": "herdr", existing: existing} {
+		if got := herdrBinPath(in); got != want {
+			t.Errorf("herdrBinPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

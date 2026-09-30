@@ -44,6 +44,8 @@ herdr plugin link "$PWD"
 
 `plugin link` does not run the build step, so rebuild `herdr-mm` yourself after pulling changes.
 
+herdr tells the plugin where its binary is (`$HERDR_BIN_PATH`). A herdr server left running after herdr was updated points at the replaced, deleted file, so when that path no longer exists the plugin runs `herdr` from `PATH` instead. Restarting the herdr server after updating herdr is still advised.
+
 ### 3. Enter the settings
 
 Open the status popup (see [Usage](#usage)) and press `s`. Enter the Mattermost URL and the bot token; press `Enter` on a line to keep its current value. The token is shown while you type it, but never printed afterwards. The values are saved in `settings.json` in the plugin config directory, `herdr plugin config-dir herdr-mattermost`, with mode 600, and the daemon is restarted so it uses them.
