@@ -8,7 +8,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/sys/unix"
 )
 
 // row is a pane herdr reports an agent in, or an open pane linked to a channel, listed in the status popup.
@@ -61,8 +64,9 @@ func listRows(agents []listedAgent, panes map[string]*pane) []row {
 	return rows
 }
 
-// status prints whether the daemon runs and the rows, with a cursor on rows[sel].
-func (a *app) status(w io.Writer, rows []row, sel int) error {
+// status prints whether the daemon runs and the rows, with a cursor on rows[sel], fitted within
+// width cells, then the full channel and whitelist of the selected row.
+func (a *app) status(w io.Writer, rows []row, sel, width int) error {
 	if pid := a.daemonPid(); pid != 0 {
 		fmt.Fprintf(w, a.t("popup.running")+"\n\n", pid)
 	} else {
@@ -73,8 +77,16 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		return nil
 	}
 	lists, listsErr := a.readWhitelists()
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, a.t("popup.header"))
+	whitelist := func(t target, max int) string {
+		switch {
+		case listsErr != nil:
+			return "?"
+		case len(lists[t.ID]) == 0:
+			return a.t("whitelist.none")
+		}
+		return usernames(lists[t.ID], max)
+	}
+	table := [][]string{strings.Split(a.t("popup.header"), "\t")}
 	for i, r := range rows {
 		cursor, on := " ", a.t("popup.no")
 		if i == sel {
@@ -85,16 +97,139 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		}
 		ch, wl := "", ""
 		if r.Target.ID != "" {
-			ch, wl = a.targetName(r.Target), usernames(lists[r.Target.ID], 3)
-			if listsErr != nil {
-				wl = "?"
-			} else if wl == "" {
-				wl = a.t("whitelist.none")
+			ch, wl = a.targetName(r.Target), whitelist(r.Target, 1)
+		}
+		table = append(table, []string{cursor, r.Name, r.Agent, emoji[r.Status] + " " + a.t(r.Status), on, ch, wl})
+	}
+	for _, line := range fitTable(table, width, 5, 6, 1) {
+		fmt.Fprintln(w, line)
+	}
+	if t := rows[sel].Target; t.ID != "" {
+		ch, wl := a.t("popup.channel"), a.t("popup.allowed")
+		pad := max(cells(ch), cells(wl)) + 1
+		fmt.Fprintln(w)
+		for _, l := range [][2]string{{ch, a.targetName(t)}, {wl, whitelist(t, 0)}} {
+			indent := "  " + strings.Repeat(" ", pad)
+			for i, line := range wrap(l[1], width-len(indent)) {
+				if i == 0 {
+					fmt.Fprintln(w, "  "+l[0]+strings.Repeat(" ", pad-cells(l[0]))+line)
+				} else {
+					fmt.Fprintln(w, indent+line)
+				}
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s %s\t%s\t%s\t%s\n", cursor, r.Name, r.Agent, emoji[r.Status], a.t(r.Status), on, ch, wl)
 	}
-	return tw.Flush()
+	return nil
+}
+
+// fitTable lays the table out in columns two cells apart, padded by display cells, and cuts the
+// columns in shrink order with … until every line fits within width cells.
+func fitTable(table [][]string, width int, shrink ...int) []string {
+	widths := make([]int, len(table[0]))
+	for _, r := range table {
+		for c, cell := range r {
+			widths[c] = max(widths[c], cells(cell))
+		}
+	}
+	over := 2*(len(widths)-1) - width
+	for _, w := range widths {
+		over += w
+	}
+	for _, c := range shrink {
+		cut := min(over, widths[c]-1)
+		if cut > 0 {
+			widths[c] -= cut
+			over -= cut
+		}
+	}
+	var lines []string
+	for _, r := range table {
+		var b strings.Builder
+		for c, cell := range r {
+			cell = cut(cell, widths[c])
+			b.WriteString(cell + strings.Repeat(" ", widths[c]-cells(cell)+2))
+		}
+		lines = append(lines, strings.TrimRight(b.String(), " "))
+	}
+	return lines
+}
+
+// runeCells is how many cells a terminal draws r in: two for wide characters and emoji, none for
+// combining marks and variation selectors, one otherwise.
+func runeCells(r rune) int {
+	switch {
+	case wide(r):
+		return 2
+	case unicode.Is(unicode.Mn, r):
+		return 0
+	}
+	return 1
+}
+
+// cells is how many cells a terminal draws s in.
+func cells(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeCells(r)
+	}
+	return n
+}
+
+// cut shortens s to at most n cells, ending it with … when it had to cut.
+func cut(s string, n int) string {
+	if cells(s) <= n {
+		return s
+	}
+	var b strings.Builder
+	used := 1 // the …
+	for _, r := range s {
+		if used+runeCells(r) > n {
+			break
+		}
+		used += runeCells(r)
+		b.WriteRune(r)
+	}
+	if n < 1 {
+		return ""
+	}
+	return b.String() + "…"
+}
+
+// wrap breaks s into lines of at most n cells, at spaces, splitting a word longer than a line.
+func wrap(s string, n int) []string {
+	n = max(n, 1)
+	var lines []string
+	line := ""
+	for _, word := range strings.Fields(s) {
+		if line != "" && cells(line)+1+cells(word) <= n {
+			line += " " + word
+			continue
+		}
+		if line != "" {
+			lines = append(lines, line)
+		}
+		for line = word; cells(line) > n; {
+			i, used := 0, 0
+			for j, r := range line {
+				if used+runeCells(r) > n && used > 0 {
+					break
+				}
+				used += runeCells(r)
+				i = j + utf8.RuneLen(r)
+			}
+			lines = append(lines, line[:i])
+			line = line[i:]
+		}
+	}
+	return append(lines, line)
+}
+
+// termWidth is how many cells wide the terminal on stdout is, or 80 when it cannot tell.
+func termWidth() int {
+	if ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ); err == nil && ws.Col > 0 {
+		return int(ws.Col)
+	}
+	return 80
 }
 
 // targetName names a pane's channel, marked public or private, or the unlink choice of the picker for none.
@@ -137,7 +272,7 @@ func (a *app) popup() {
 		sel = max(min(sel, len(rows)-1), 0)
 		fmt.Print("\x1b[H\x1b[2J")
 		if err == nil {
-			err = a.status(os.Stdout, rows, sel)
+			err = a.status(os.Stdout, rows, sel, termWidth())
 		}
 		if err != nil {
 			fmt.Printf(a.t("popup.error")+"\n", err)
