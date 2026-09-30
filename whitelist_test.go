@@ -111,14 +111,18 @@ func TestProblemsTagAll(t *testing.T) {
 		!strings.HasPrefix(posts[1].Message, "@all ❌ Could not prompt the agent: ") || posts[1].ChannelID != "ch1" {
 		t.Fatalf("problem answers = %+v", posts)
 	}
-	for _, key := range []string{"dialog", "prompt.failed", "prompt.blocked"} {
+	e.a.capture("ch1", "root1", "") // no screen to read
+	if posts = e.mm.snapshot(); len(posts) != 3 || !strings.HasPrefix(posts[2].Message, "@all ❌ Could not read the pane: ") || posts[2].ChannelID != "ch1" {
+		t.Fatalf("capture failure = %+v", posts)
+	}
+	for _, key := range []string{"dialog", "prompt.failed", "prompt.blocked", "plugin.off"} {
 		for _, l := range []string{"en", "vi"} {
 			if !strings.HasPrefix(catalog[l][key], "@all ") {
 				t.Errorf("%s %s does not tag @all: %q", l, key, catalog[l][key])
 			}
 		}
 	}
-	for _, key := range []string{"connected", "reconnected", "plugin.off", "prompt.received", "prompt.late"} {
+	for _, key := range []string{"connected", "reconnected", "prompt.received", "prompt.late"} {
 		if strings.Contains(catalog["en"][key]+catalog["vi"][key], "@") {
 			t.Errorf("%s must not tag anyone", key)
 		}

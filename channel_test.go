@@ -216,9 +216,11 @@ func TestExecAndHelp(t *testing.T) {
 		return nil
 	})
 	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"id":"alice-id","username":"alice"}],"ch2":[{"id":"alice-id","username":"alice"}]}`), 0o600)
-	help, usage, ack, list := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"], e.a.listPanes()
-	if !strings.Contains(list, "/_redirect/pl/root1") || !strings.Contains(list, "/_redirect/pl/root2") {
-		t.Fatalf("list = %q", list)
+	help, usage, ack, list := catalog["en"]["help"], catalog["en"]["exec.usage"], catalog["en"]["prompt.received"], e.a.listPanes("ch1")
+	list2 := e.a.listPanes("ch2")
+	if !strings.Contains(list, "/_redirect/pl/root1") || strings.Contains(list, "/_redirect/pl/root2") ||
+		!strings.Contains(list2, "/_redirect/pl/root2") || strings.Contains(list2, "/_redirect/pl/root1") {
+		t.Fatalf("list = %q, %q", list, list2)
 	}
 	for _, c := range []struct {
 		p    post
@@ -230,6 +232,7 @@ func TestExecAndHelp(t *testing.T) {
 		{post{ID: "c4", ChannelID: "ch1", RootID: "root1", Message: "@herdr list"}, "ch1|root1|" + list},
 		{post{ID: "c5", ChannelID: "ch2", Message: "@herdr #exec /compact"}, "ch2|c5|" + ack},
 		{post{ID: "c6", ChannelID: "ch2", RootID: "c5", Message: "@herdr help"}, "ch2|c5|" + help},
+		{post{ID: "c12", ChannelID: "ch2", Message: "@herdr list"}, "ch2|c12|" + list2},
 		{post{ID: "c7", ChannelID: "ch1", Message: "help"}, ""},        // no mention in a channel: ignored
 		{post{ID: "c8", ChannelID: "ch3", Message: "@herdr help"}, ""}, // no pane in ch3: help and list too are ignored
 		{post{ID: "c9", ChannelID: "ch3", RootID: "x", Message: "@herdr List"}, ""},
@@ -319,8 +322,13 @@ func TestPaneWithoutAgentKeepsItsChannelRow(t *testing.T) {
 	}
 	var out strings.Builder
 	e.a.status(&out, rows, 1)
-	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !strings.Contains(out.String(), "# Dev") {
+	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !regexp.MustCompile(`# Dev +alice\n`).MatchString(out.String()) {
 		t.Fatalf("popup:\n%s", out.String())
+	}
+	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte("{"), 0o600)
+	out.Reset()
+	if err := e.a.status(&out, rows, 1); err != nil || !strings.Contains(out.String(), "api #2") || !regexp.MustCompile(`# Dev +\?\n`).MatchString(out.String()) {
+		t.Fatalf("popup with an unreadable whitelists.json: %v\n%s", err, out.String())
 	}
 	if err := e.a.retarget(rows[1].ID, target{}); err != nil {
 		t.Fatal(err)

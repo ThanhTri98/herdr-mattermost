@@ -202,7 +202,7 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 	e.a.capture("ch1", "root1", "")
 	fontPaths = fonts
 	posts := e.mm.snapshot()
-	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.HasPrefix(posts[0].Message, "❌ Could not post the screenshot: no monospace font found") {
+	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.HasPrefix(posts[0].Message, "@all ❌ Could not post the screenshot: no monospace font found") {
 		t.Fatalf("no-font posts = %+v", posts)
 	}
 

@@ -32,17 +32,21 @@ func TestReplyPromptsAgent(t *testing.T) {
 
 	e.a.withState(func(panes map[string]*pane) error {
 		panes["w1:p1"].Name = "web"
-		panes["w2:p1"] = &pane{RootID: "root2", Channel: "Ops", Status: "idle", Agent: "claude", Name: "web"}
-		panes["w3:p1"] = &pane{RootID: "root3", Channel: "QA", Status: "idle", Agent: "claude"}
+		panes["w2:p1"] = &pane{RootID: "root2", ChannelID: "ch2", Channel: "Ops", Status: "idle", Agent: "claude", Name: "web"}
+		panes["w3:p1"] = &pane{RootID: "root3", ChannelID: "ch3", Channel: "QA", Status: "idle", Agent: "claude"}
 		return nil
 	})
+	os.WriteFile(filepath.Join(e.a.stateDir, "whitelists.json"), []byte(`{"ch1":[{"id":"alice-id","username":"alice"}],"ch2":[{"id":"alice-id","username":"alice"}]}`), 0o600)
 	e.a.handleEvent(posted(post{ID: "r3", ChannelID: "ch1", UserID: "alice-id", Message: "@herdr  List ", CreateAt: 3}))
 	posts = e.mm.snapshot()
 	m := posts[len(posts)-1].Message
 	if len(posts) != 3 || posts[2].RootID != "r3" || strings.Contains(m, "w1:p1") || strings.Contains(m, "pane `") ||
-		!strings.Contains(m, "**web** · claude · `proj` · [thread](") || !strings.Contains(m, "**web #2** · claude · `?` · [thread](") ||
-		!strings.Contains(m, "🟢 **idle** · claude · `?`") || !strings.Contains(m, "/_redirect/pl/root1") {
-		t.Fatalf("list answer = %+v", posts)
+		m != "- 🟢 **idle** · **web** · claude · `proj` · [thread]("+e.a.mmURL+"/_redirect/pl/root1)" {
+		t.Fatalf("list answer in ch1 = %+v", posts)
+	}
+	e.a.handleEvent(posted(post{ID: "r4", ChannelID: "ch2", UserID: "alice-id", Message: "@herdr list", CreateAt: 4}))
+	if m = e.mm.snapshot()[3].Message; m != "- 🟢 **idle** · **web #2** · claude · `?` · [thread]("+e.a.mmURL+"/_redirect/pl/root2)" {
+		t.Fatalf("list answer in ch2 = %q", m)
 	}
 }
 
@@ -142,7 +146,7 @@ func TestPluginOffStopsDaemon(t *testing.T) {
 		if got := e.prompts(); got != "" {
 			t.Fatalf("%s: prompted %q", flag, got)
 		}
-		if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || !strings.Contains(posts[0].Message, "not typed into any agent") {
+		if posts := e.mm.snapshot(); len(posts) != 1 || posts[0].RootID != "root1" || !strings.HasPrefix(posts[0].Message, "@all ⚪ herdr is not running") {
 			t.Fatalf("%s: answer = %+v", flag, posts)
 		}
 	}
@@ -252,7 +256,7 @@ func TestLanguageSwitch(t *testing.T) {
 		t.Fatalf("en root = %q", m)
 	}
 	e.a.switchLang()
-	if got := e.a.listPanes(); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
+	if got := e.a.listPanes("ch1"); !strings.HasPrefix(got, "- 🟢 **rảnh** · claude") {
 		t.Fatalf("vi list = %q", got)
 	}
 	if got := e.a.truncate(strings.Repeat("x", 100), 50); !strings.HasSuffix(got, "\n… (đã cắt bớt)") {

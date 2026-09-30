@@ -72,10 +72,7 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		fmt.Fprintln(w, a.t("popup.none"))
 		return nil
 	}
-	lists, err := a.readWhitelists()
-	if err != nil {
-		return err
-	}
+	lists, listsErr := a.readWhitelists()
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, a.t("popup.header"))
 	for i, r := range rows {
@@ -89,7 +86,9 @@ func (a *app) status(w io.Writer, rows []row, sel int) error {
 		ch, wl := "", ""
 		if r.Target.ID != "" {
 			ch, wl = a.targetName(r.Target), usernames(lists[r.Target.ID], 3)
-			if wl == "" {
+			if listsErr != nil {
+				wl = "?"
+			} else if wl == "" {
 				wl = a.t("whitelist.none")
 			}
 		}

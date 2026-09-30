@@ -18,7 +18,7 @@ var catalog = map[string]map[string]string{
 		"dialog":              "@all ✋ **%s** đang chờ trả lời một hộp thoại, ai đó vào máy trả lời giúp nhé:",
 		"connected":           "🔌 Đã kết nối: daemon herdr-mm vừa khởi động.",
 		"reconnected":         "🔌 Đã kết nối lại sau khi mất kết nối.",
-		"plugin.off":          "⚪ herdr không chạy hoặc plugin Mattermost đang tắt, nên tin này chưa được gõ vào agent nào và bot đã ngừng nghe. Bật plugin, rồi bật/tắt một pane hoặc khởi động lại herdr để bot hoạt động lại.",
+		"plugin.off":          "@all ⚪ herdr không chạy hoặc plugin Mattermost đang tắt, nên tin này chưa được gõ vào agent nào và bot đã ngừng nghe. Bật plugin, rồi bật/tắt một pane hoặc khởi động lại herdr để bot hoạt động lại.",
 		"prompt.failed":       "@all ❌ Không gửi được lệnh cho agent: ",
 		"prompt.blocked":      "@all ✋ Agent đang chờ trả lời một hộp thoại. Vào máy duyệt hoặc trả lời, rồi nhắn lại.",
 		"prompt.late":         "📬 Gửi trễ: lúc bạn gửi bot chưa kết nối, nên tin vừa được gõ vào agent.",
@@ -51,7 +51,7 @@ var catalog = map[string]map[string]string{
 			"- Nội dung bất kỳ: gửi lệnh cho agent của kênh.\n" +
 			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`.\n" +
 			"- `#exec /command`: gõ đúng lệnh vào pane, không chụp màn hình, ví dụ gọi một skill, `/clear`, `/compact`.\n" +
-			"- `list`: xem các pane đang đẩy lên Mattermost.\n" +
+			"- `list`: xem các pane đang đẩy vào kênh này.\n" +
 			"- `help`: hiện danh sách này.\n\n" +
 			"Tin nhắn bắt đầu bằng `/` bị Mattermost hiểu là lệnh của nó, nên hãy dùng `#exec`.",
 		"exec.usage":     "Cách dùng: `#exec /command`, ví dụ `#exec /clear`.",
@@ -80,7 +80,7 @@ var catalog = map[string]map[string]string{
 		"dialog":              "@all ✋ **%s** is waiting on a dialog. Someone answer it on the machine:",
 		"connected":           "🔌 Connected: the herdr-mm daemon started.",
 		"reconnected":         "🔌 Reconnected after the connection dropped.",
-		"plugin.off":          "⚪ herdr is not running or the Mattermost plugin is disabled, so this was not typed into any agent and the bot has stopped listening. Enable the plugin, then toggle a pane or restart herdr to bring it back.",
+		"plugin.off":          "@all ⚪ herdr is not running or the Mattermost plugin is disabled, so this was not typed into any agent and the bot has stopped listening. Enable the plugin, then toggle a pane or restart herdr to bring it back.",
 		"prompt.failed":       "@all ❌ Could not prompt the agent: ",
 		"prompt.blocked":      "@all ✋ The agent is waiting on a dialog. Approve or answer it on the machine, then reply again.",
 		"prompt.late":         "📬 Delivered late: the bot was not connected when you sent this, so it was typed into the agent just now.",
@@ -113,7 +113,7 @@ var catalog = map[string]map[string]string{
 			"- Anything else: prompt the channel's agent.\n" +
 			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`.\n" +
 			"- `#exec /command`: type exactly the command into the pane, without a screenshot, for example a skill, `/clear`, `/compact`.\n" +
-			"- `list`: list the mirrored panes.\n" +
+			"- `list`: list the panes mirrored into this channel.\n" +
 			"- `help`: show this list.\n\n" +
 			"A message starting with `/` is taken by Mattermost as its own slash command, so use `#exec`.",
 		"exec.usage":     "Usage: `#exec /command`, for example `#exec /clear`.",

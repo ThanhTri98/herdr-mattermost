@@ -323,7 +323,7 @@ var errPluginOff = errors.New("herdr is not running or the plugin is disabled")
 // channel's whitelist. The post, top-level or in any thread, prompts that pane and is answered in its
 // thread; anyone else who mentions the bot there is told they are not allowed, and an empty whitelist
 // obeys nobody. There, the mention followed by "help" gets the command list and followed by "list" the
-// mirrored panes. A direct message, dm, gets one line saying the bot works only in channels. late marks a post sent while the WebSocket was down.
+// panes mirrored into that channel. A direct message, dm, gets one line saying the bot works only in channels. late marks a post sent while the WebSocket was down.
 func (a *app) handlePost(p post, dm, late bool) error {
 	// Bot and webhook posts can carry a human's user id, so they are dropped: no reply loops, no remote
 	// control by integrations. System posts, such as a channel header change, are dropped too: they carry
@@ -363,7 +363,7 @@ func (a *app) handlePost(p post, dm, late bool) error {
 		return nil
 	}
 	if strings.EqualFold(text, "list") {
-		a.sayIn(p.ChannelID, root, a.listPanes())
+		a.sayIn(p.ChannelID, root, a.listPanes(p.ChannelID))
 		return nil
 	}
 
@@ -449,12 +449,15 @@ func (a *app) stripMention(msg string) (string, bool) {
 	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(out), ",:")), out != msg
 }
 
-// listPanes lists the mirrored panes, with a link to each one's thread.
-func (a *app) listPanes() string {
+// listPanes lists the panes mirrored into the channel, with a link to each one's thread.
+func (a *app) listPanes(channelID string) string {
 	var lines []string
 	a.withState(func(panes map[string]*pane) error {
 		labels, _, _, _ := a.labels(panes)
 		for id, p := range panes {
+			if p.ChannelID != channelID {
+				continue
+			}
 			lines = append(lines, fmt.Sprintf("- %s **%s** · %s%s · `%s` · [thread](%s/_redirect/pl/%s)",
 				emoji[p.Status], a.t(p.Status), bold(cmp.Or(labels[id], p.Name)), p.Agent, baseName(p.Cwd), a.mmURL, p.RootID))
 		}

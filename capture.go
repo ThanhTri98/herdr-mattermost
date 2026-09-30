@@ -71,7 +71,7 @@ func (a *app) capture(channelID, rootID, cmd string) {
 	}
 	screen, settled, err := a.settledScreen(id)
 	if err != nil {
-		a.sayIn(channelID, rootID, "❌ Could not read the pane: "+err.Error())
+		a.sayIn(channelID, rootID, "@all ❌ Could not read the pane: "+err.Error())
 		return
 	}
 	msg := fmt.Sprintf("📸 Screen of pane `%s`", id)
@@ -79,7 +79,7 @@ func (a *app) capture(channelID, rootID, cmd string) {
 		msg = fmt.Sprintf("⏱ Pane `%s` was still changing after %s, so this is the screen at that point.", id, captureTimeout)
 	}
 	if err := a.postScreen(channelID, rootID, msg, parseANSI(string(screen))); err != nil {
-		a.sayIn(channelID, rootID, "❌ Could not post the screenshot: "+err.Error())
+		a.sayIn(channelID, rootID, "@all ❌ Could not post the screenshot: "+err.Error())
 	}
 	if f := strings.Fields(cmd); len(f) == 0 || !escCommands[f[0]] {
 		return
