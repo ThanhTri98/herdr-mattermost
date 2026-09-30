@@ -296,3 +296,53 @@ func TestChannelCapture(t *testing.T) {
 		t.Fatalf("bare #capture in a thread = %+v, prompts %q", shot, e.prompts())
 	}
 }
+
+func TestPaneWithoutAgentKeepsItsChannelRow(t *testing.T) {
+	e := newTestEnv(t)
+	os.WriteFile(filepath.Join(e.herdrDir, "agents.json"), []byte(`{"result":{"agents":[{"pane_id":"w1:p1","agent":"claude","agent_status":"idle"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "panes.json"), []byte(`{"result":{"panes":[{"pane_id":"w1:p1","workspace_id":"w1"},{"pane_id":"w1:p2","workspace_id":"w1"},{"pane_id":"w2:p1","workspace_id":"w2"}]}}`), 0o644)
+	os.WriteFile(filepath.Join(e.herdrDir, "workspaces.json"), []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"api","tab_count":1},{"workspace_id":"w2","label":"└ worker","tab_count":1}]}}`), 0o644)
+	// w1:p2 is a shell that ran Claude, w2:p1 a hidden worker pane and w9:p1 a closed pane.
+	os.WriteFile(filepath.Join(e.a.stateDir, "targets.json"), []byte(`{"w1:p2":{"ID":"ch1","Name":"Dev"},"w2:p1":{"ID":"ch2","Name":"Ops"},"w9:p1":{"ID":"ch3","Name":"Old"}}`), 0o600)
+	rows, err := e.a.rows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[1].ID != "w1:p2" || rows[1].Name != "api #2" || rows[1].Status != "noagent" || rows[1].Target.ID != "ch1" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	var out strings.Builder
+	e.a.status(&out, rows, 1)
+	if !strings.Contains(out.String(), "api #2") || !strings.Contains(out.String(), "no agent") || !strings.Contains(out.String(), "~Dev") {
+		t.Fatalf("popup:\n%s", out.String())
+	}
+	if err := e.a.retarget(rows[1].ID, target{}); err != nil {
+		t.Fatal(err)
+	}
+	if opts, _ := e.a.targetOptions("w1:p1"); !slices.Contains(opts, target{"ch1", "Dev"}) {
+		t.Fatalf("freed channel not offered: %+v", opts)
+	}
+	if rows, _ = e.a.rows(); len(rows) != 1 {
+		t.Fatalf("pane with no agent and no channel still listed: %+v", rows)
+	}
+}
+
+func TestFreeChannelOfMirroredPaneWithoutAgent(t *testing.T) {
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(e.herdrDir, "agent.json")) // Claude exits, the pane stays open as a shell
+	if err := e.a.retarget("w1:p1", target{}); err != nil {
+		t.Fatalf("freeing the channel = %v", err)
+	}
+	panes, _ := e.a.readPanes()
+	targets, _ := e.a.readTargets()
+	if panes["w1:p1"] != nil || targets["w1:p1"].ID != "" {
+		t.Fatalf("the pane must be off and unlinked: panes %+v, targets %+v", panes, targets)
+	}
+}

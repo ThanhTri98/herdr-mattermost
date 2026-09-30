@@ -306,7 +306,7 @@ func (a *app) daemonPid() int {
 	return pid
 }
 
-// row is a pane herdr reports an agent in, listed in the status popup.
+// row is a pane herdr reports an agent in, or an open pane linked to a channel, listed in the status popup.
 type row struct {
 	ID, Name, Agent, Cwd, Status string
 	Mirrored                     bool
@@ -319,8 +319,8 @@ type listedAgent struct {
 	PaneID string `json:"pane_id"`
 }
 
-// rows lists the agent panes. It does not take state.lock, which a toggle or
-// event hook holds across Mattermost calls.
+// rows lists the agent panes and the open panes linked to a channel. It does not take state.lock, which a
+// toggle or event hook holds across Mattermost calls.
 func (a *app) rows() ([]row, error) {
 	panes, err := a.readPanes()
 	if err != nil {
@@ -364,9 +364,10 @@ type herdrWorkspace struct {
 	TabCount    int `json:"tab_count"`
 }
 
-// labels names every agent pane herdr reports and every mirrored pane, numbered so a pane has the same
-// label in the popup and in every post; a mirrored pane herdr no longer lists keeps its last label. It
-// also returns herdr's agents and marks the panes to leave out of the popup.
+// labels names every agent pane herdr reports, every open pane linked to a channel and every mirrored
+// pane, numbered so a pane has the same label in the popup and in every post; a mirrored pane herdr no
+// longer lists keeps its last label. It also returns herdr's agents, plus a noagent entry for each open
+// pane linked to a channel with no agent, and marks the panes to leave out of the popup.
 func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]bool, []listedAgent, error) {
 	var r struct {
 		Result struct {
@@ -393,7 +394,19 @@ func (a *app) labels(mirrored map[string]*pane) (map[string]string, map[string]b
 	for id, p := range mirrored {
 		set[id] = cmp.Or(names[id], p.Name)
 	}
-	return numbered(set), hidden, r.Result.Agents, nil
+	// An open pane still linked to a channel is listed even with no agent, so the channel can be freed.
+	targets, err := a.readTargets()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	agents := r.Result.Agents
+	for id := range targets {
+		if _, open := names[id]; open && !slices.ContainsFunc(agents, func(ag listedAgent) bool { return ag.PaneID == id }) {
+			set[id] = names[id]
+			agents = append(agents, listedAgent{agentInfo{Status: "noagent"}, id})
+		}
+	}
+	return numbered(set), hidden, agents, nil
 }
 
 // label sets p.Name to the pane's label; a failed lookup keeps the last one.
@@ -799,7 +812,7 @@ func freeChannels(chans []target, targets map[string]target, id string) []target
 }
 
 // retarget links a pane to a channel, or to the DM for a target with no id. A mirrored pane's thread
-// is stopped where it was and a new one started in the new place.
+// is stopped where it was and a new one started in the new place; with its agent gone it stays off.
 func (a *app) retarget(id string, to target) error {
 	var changed, mirrored bool
 	err := a.withState(func(panes map[string]*pane) error {
@@ -821,7 +834,11 @@ func (a *app) retarget(id string, to target) error {
 	if err != nil || !changed || !mirrored {
 		return err
 	}
-	return errors.Join(a.toggle(id), a.toggle(id))
+	stop, start := a.toggle(id), a.toggle(id)
+	if he := (*herdrError)(nil); errors.As(start, &he) && he.Code == "agent_not_found" {
+		start = nil
+	}
+	return errors.Join(stop, start)
 }
 
 // readPanes loads panes.json. withState replaces it by rename, so it is never read half written.
@@ -1043,7 +1060,7 @@ func answered(rs []reply, turn []string, open bool) bool {
 	return !open && len(rs) > 0 && slices.Equal(rs[len(rs)-1].prompts, turn)
 }
 
-var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "off": "⚪", "closed": "⚫"}
+var emoji = map[string]string{"idle": "🟢", "done": "✅", "working": "⏳", "blocked": "✋", "unknown": "❔", "noagent": "➖", "off": "⚪", "closed": "⚫"}
 
 func (a *app) rootMessage(p *pane) string {
 	head := fmt.Sprintf("%s **%s** · %s%s · `%s`", emoji[p.Status], a.t(p.Status), bold(p.Name), p.Agent, baseName(p.Cwd))

@@ -10,7 +10,7 @@ import (
 var catalog = map[string]map[string]string{
 	"vi": {
 		"idle": "rảnh", "done": "xong", "working": "đang làm", "blocked": "đang chờ bạn",
-		"unknown": "không rõ", "off": "tắt", "closed": "đã đóng",
+		"unknown": "không rõ", "noagent": "không có agent", "off": "tắt", "closed": "đã đóng",
 		"root.reply":      "_Trả lời trong thread này để gửi lệnh cho agent._",
 		"root.off":        "_Đã dừng đẩy lên Mattermost._",
 		"root.closed":     "_Pane đã đóng, đã dừng đẩy lên Mattermost._",
@@ -65,7 +65,7 @@ var catalog = map[string]map[string]string{
 	},
 	"en": {
 		"idle": "idle", "done": "done", "working": "working", "blocked": "blocked",
-		"unknown": "unknown", "off": "off", "closed": "closed",
+		"unknown": "unknown", "noagent": "no agent", "off": "off", "closed": "closed",
 		"root.reply":      "_Reply in this thread to prompt the agent._",
 		"root.off":        "_Mirroring stopped._",
 		"root.closed":     "_Pane closed, mirroring stopped._",

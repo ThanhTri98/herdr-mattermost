@@ -147,7 +147,7 @@ func (f *fakeMM) snapshot() []post {
 const fakeHerdr = `#!/bin/sh
 d=$(dirname "$0")
 case "$1 $2" in
-"agent get") cat "$d/agent.json" ;;
+"agent get") cat "$d/agent.json" 2>/dev/null || { echo '{"error":{"code":"agent_not_found","message":"no agent"},"id":"x"}' >&2; exit 1; } ;;
 "agent read") cat "$d/screen.txt" ;;
 "pane read") [ "$4 $5 $6 $7" = "--source visible --format ansi" ] && cat "$d/screen.ansi" ;;
 "agent list") cat "$d/agents.json" 2>/dev/null || echo '{"result":{"agents":[]}}' ;;
