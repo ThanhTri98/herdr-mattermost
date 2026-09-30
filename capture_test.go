@@ -246,6 +246,7 @@ func TestCaptureEscClosesSlashPanel(t *testing.T) {
 	for _, c := range []struct{ status, cmd, want string }{
 		{"idle", "/stats", "w1:p1|esc\n"},
 		{"done", "/usage", "w1:p1|esc\n"},
+		{"done", "/model", "w1:p1|esc\n"},
 		{"idle", "/stats last 7 days", "w1:p1|esc\n"},
 		{"idle", "/status", "w1:p1|esc\n"},
 		{"idle", "/context", ""},

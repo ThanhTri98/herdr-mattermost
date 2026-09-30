@@ -49,7 +49,7 @@ var (
 )
 
 // escCommands are the slash commands whose panel stays open until Esc.
-var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true}
+var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true, "/model": true}
 
 // capture posts a screenshot of the pane linked to channelID into the thread rootID once the agent is
 // blocked, or is not working and the screen has settled. After one of escCommands it presses Esc to close
