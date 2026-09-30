@@ -177,7 +177,11 @@ func TestStatusFitsWidth(t *testing.T) {
 		{Name: "api", Agent: "claude", Status: "done", Mirrored: true, Target: target{ID: "ch1", Name: "herdr-mattermost-plugins-rat-dai", Private: true}},
 		{Name: "web", Agent: "claude", Status: "working"},
 	}
-	for _, width := range []int{60, 72, 200} {
+	for width, want := range map[int]string{
+		64:  "🔒 herdr…  tri_16513…", // both cut, one cell at a time from the wider
+		76:  "🔒 herdr-mattermo…  tri_165139 +2",
+		200: "🔒 herdr-mattermost-plugins-rat-dai  tri_165139 +2",
+	} {
 		var out strings.Builder
 		if err := e.a.status(&out, rows, 0, width); err != nil {
 			t.Fatal(err)
@@ -189,12 +193,16 @@ func TestStatusFitsWidth(t *testing.T) {
 			}
 		}
 		head, api := lines[2], lines[3]
-		if !strings.HasPrefix(head, "   TÊN") || !strings.Contains(api, "tri_165139 +2") || !strings.Contains(out.String(), "Kênh:      🔒 herdr-mattermost-plugins-rat-dai") || !strings.Contains(out.String(), "Whitelist: tri_165139, an.nguyen, binh.tran") {
+		if !strings.HasPrefix(head, "   TÊN") || !strings.HasSuffix(api, want) || strings.Contains(out.String(), "Tên:") || !strings.Contains(out.String(), "\n\n  Kênh:      🔒 herdr-mattermost-plugins-rat-dai") || !strings.Contains(out.String(), "Whitelist: tri_165139, an.nguyen, binh.tran") {
 			t.Fatalf("width %d:\n%s", width, out.String())
 		}
-		if strings.Contains(api, "…") != (width < 100) {
-			t.Fatalf("width %d cut = %v:\n%s", width, strings.Contains(api, "…"), out.String())
-		}
+	}
+	rows[0].Name = "firstmate-orchestrator / agents"
+	var cutName strings.Builder
+	e.a.status(&cutName, rows, 0, 76)
+	lines := strings.Split(cutName.String(), "\n")
+	if !strings.HasSuffix(lines[2], "KÊNH  WHITELIST") || !strings.HasPrefix(lines[3], ">  firstmate-orchestrat…  claude") || !strings.Contains(cutName.String(), "\n\n  Tên:       firstmate-orchestrator / agents\n  Kênh:      🔒 herdr-mattermost-plugins-rat-dai\n") {
+		t.Fatalf("name cut last:\n%s", cutName.String())
 	}
 	var out strings.Builder
 	e.a.status(&out, rows, 1, 80)

@@ -65,7 +65,7 @@ func listRows(agents []listedAgent, panes map[string]*pane) []row {
 }
 
 // status prints whether the daemon runs and the rows, with a cursor on rows[sel], fitted within
-// width cells, then the full channel and whitelist of the selected row.
+// width cells, then the selected row's full name when it was cut, and its full channel and whitelist.
 func (a *app) status(w io.Writer, rows []row, sel, width int) error {
 	if pid := a.daemonPid(); pid != 0 {
 		fmt.Fprintf(w, a.t("popup.running")+"\n\n", pid)
@@ -101,15 +101,25 @@ func (a *app) status(w io.Writer, rows []row, sel, width int) error {
 		}
 		table = append(table, []string{cursor, r.Name, r.Agent, emoji[r.Status] + " " + a.t(r.Status), on, ch, wl})
 	}
-	for _, line := range fitTable(table, width, 5, 6, 1) {
+	lines, widths := fitTable(table, width, []int{5, 6}, []int{1})
+	for _, line := range lines {
 		fmt.Fprintln(w, line)
 	}
+	var detail [][2]string
+	if r := rows[sel]; cells(r.Name) > widths[1] {
+		detail = append(detail, [2]string{a.t("popup.name"), r.Name})
+	}
 	if t := rows[sel].Target; t.ID != "" {
-		ch, wl := a.t("popup.channel"), a.t("popup.allowed")
-		pad := max(cells(ch), cells(wl)) + 1
+		detail = append(detail, [2]string{a.t("popup.channel"), a.targetName(t)}, [2]string{a.t("popup.allowed"), whitelist(t, len(lists[t.ID]))})
+	}
+	if len(detail) > 0 {
+		pad := 0
+		for _, l := range detail {
+			pad = max(pad, cells(l[0])+1)
+		}
+		indent := "  " + strings.Repeat(" ", pad)
 		fmt.Fprintln(w)
-		for _, l := range [][2]string{{ch, a.targetName(t)}, {wl, whitelist(t, 0)}} {
-			indent := "  " + strings.Repeat(" ", pad)
+		for _, l := range detail {
 			for i, line := range wrap(l[1], width-len(indent)) {
 				if i == 0 {
 					fmt.Fprintln(w, "  "+l[0]+strings.Repeat(" ", pad-cells(l[0]))+line)
@@ -122,9 +132,11 @@ func (a *app) status(w io.Writer, rows []row, sel, width int) error {
 	return nil
 }
 
-// fitTable lays the table out in columns two cells apart, padded by display cells, and cuts the
-// columns in shrink order with … until every line fits within width cells.
-func fitTable(table [][]string, width int, shrink ...int) []string {
+// fitTable lays the table out in columns two cells apart, padded by display cells, and until every
+// line fits within width cells cuts with … one cell at a time from the widest column of the first
+// shrink group, then of the next, never below its header's width. It returns the lines and the
+// column widths.
+func fitTable(table [][]string, width int, shrink ...[]int) ([]string, []int) {
 	widths := make([]int, len(table[0]))
 	for _, r := range table {
 		for c, cell := range r {
@@ -135,11 +147,18 @@ func fitTable(table [][]string, width int, shrink ...int) []string {
 	for _, w := range widths {
 		over += w
 	}
-	for _, c := range shrink {
-		cut := min(over, widths[c]-1)
-		if cut > 0 {
-			widths[c] -= cut
-			over -= cut
+	for _, group := range shrink {
+		for ; over > 0; over-- {
+			widest := -1
+			for _, c := range group {
+				if widths[c] > cells(table[0][c]) && (widest < 0 || widths[c] > widths[widest]) {
+					widest = c
+				}
+			}
+			if widest < 0 {
+				break
+			}
+			widths[widest]--
 		}
 	}
 	var lines []string
@@ -151,7 +170,7 @@ func fitTable(table [][]string, width int, shrink ...int) []string {
 		}
 		lines = append(lines, strings.TrimRight(b.String(), " "))
 	}
-	return lines
+	return lines, widths
 }
 
 // runeCells is how many cells a terminal draws r in: two for wide characters and emoji, none for
