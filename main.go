@@ -812,7 +812,7 @@ func freeChannels(chans []target, targets map[string]target, id string) []target
 }
 
 // retarget links a pane to a channel, or to the DM for a target with no id. A mirrored pane's thread
-// is stopped where it was and a new one started in the new place.
+// is stopped where it was and a new one started in the new place; with its agent gone it stays off.
 func (a *app) retarget(id string, to target) error {
 	var changed, mirrored bool
 	err := a.withState(func(panes map[string]*pane) error {
