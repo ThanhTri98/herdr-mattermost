@@ -247,3 +247,52 @@ func TestExecAndHelp(t *testing.T) {
 		t.Fatalf("prompts = %q", got)
 	}
 }
+
+func TestChannelCapture(t *testing.T) {
+	if _, err := loadFonts(); err != nil {
+		t.Skip(err)
+	}
+	fastCapture(t)
+	e := newTestEnv(t)
+	e.setAgent(t, "idle")
+	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("Context 12%\r\n"), 0o644)
+	if err := e.a.toggle("w1:p1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.a.retarget("w1:p1", target{"ch1", "Dev"}); err != nil {
+		t.Fatal(err)
+	}
+	n := len(e.mm.snapshot())
+	for _, p := range []post{
+		{ID: "c1", ChannelID: "ch1", UserID: "alice-id", Message: "#capture /context", CreateAt: 101},           // no mention: ignored
+		{ID: "c2", ChannelID: "ch1", RootID: "t1", UserID: "bob-id", Message: "@herdr #capture", CreateAt: 102}, // refused
+		{ID: "c3", ChannelID: "ch1", UserID: "alice-id", Message: "@herdr #capture /context", CreateAt: 103},
+	} {
+		if err := e.a.handleEvent(posted(p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	shot := e.waitPost(t, n+3)
+	if got := e.prompts(); got != "w1:p1|/context\n" {
+		t.Fatalf("prompts = %q", got)
+	}
+	posts := e.mm.snapshot()
+	if posts[n].RootID != "t1" || posts[n].Message != "Only @alice can control this agent." ||
+		posts[n+1].ChannelID != "ch1" || posts[n+1].RootID != "c3" || !strings.HasPrefix(posts[n+1].Message, "📥") {
+		t.Fatalf("answers = %+v", posts[n:])
+	}
+	if shot.ChannelID != "ch1" || shot.RootID != "c3" || len(shot.FileIDs) != 1 {
+		t.Fatalf("screenshot post = %+v", shot)
+	}
+	e.mm.mu.Lock()
+	files := e.mm.files
+	e.mm.mu.Unlock()
+	if len(files) != 1 || !strings.HasPrefix(files[0], "ch1|screen.png|") {
+		t.Fatalf("uploads = %.40q", files)
+	}
+
+	e.a.handleEvent(posted(post{ID: "c4", ChannelID: "ch1", RootID: "c3", UserID: "alice-id", Message: "@herdr #capture", CreateAt: 104}))
+	if shot := e.waitPost(t, n+4); shot.RootID != "c3" || len(shot.FileIDs) != 1 || e.prompts() != "w1:p1|/context\n" {
+		t.Fatalf("bare #capture in a thread = %+v, prompts %q", shot, e.prompts())
+	}
+}
