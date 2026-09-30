@@ -51,10 +51,11 @@ var (
 // escCommands are the slash commands whose panel stays open until Esc.
 var escCommands = map[string]bool{"/status": true, "/stats": true, "/usage": true}
 
-// capture posts a screenshot of the pane mirrored in the thread rootID once the agent is blocked, or is
-// not working and the screen has settled. After one of escCommands it presses Esc to close the panel
-// Claude leaves open, but only when herdr reports the agent idle or done.
-func (a *app) capture(rootID, cmd string) {
+// capture posts a screenshot of the pane mirrored in the DM thread rootID, or linked to channelID, into
+// that thread once the agent is blocked, or is not working and the screen has settled. After one of
+// escCommands it presses Esc to close the panel Claude leaves open, but only when herdr reports the agent
+// idle or done.
+func (a *app) capture(channelID, rootID, cmd string) {
 	panes, err := a.readPanes()
 	if err != nil {
 		log.Printf("capture: %v", err)
@@ -62,7 +63,7 @@ func (a *app) capture(rootID, cmd string) {
 	}
 	var id string
 	for pid, p := range panes {
-		if p.RootID == rootID {
+		if channelID == a.dmID && p.RootID == rootID || channelID != a.dmID && p.ChannelID == channelID {
 			id = pid
 		}
 	}
@@ -71,15 +72,15 @@ func (a *app) capture(rootID, cmd string) {
 	}
 	screen, settled, err := a.settledScreen(id)
 	if err != nil {
-		a.say(rootID, "❌ Could not read the pane: "+err.Error())
+		a.sayIn(channelID, rootID, "❌ Could not read the pane: "+err.Error())
 		return
 	}
 	msg := fmt.Sprintf("📸 Screen of pane `%s`", id)
 	if !settled {
 		msg = fmt.Sprintf("⏱ Pane `%s` was still changing after %s, so this is the screen at that point.", id, captureTimeout)
 	}
-	if err := a.postScreen(rootID, msg, parseANSI(string(screen))); err != nil {
-		a.say(rootID, "❌ Could not post the screenshot: "+err.Error())
+	if err := a.postScreen(channelID, rootID, msg, parseANSI(string(screen))); err != nil {
+		a.sayIn(channelID, rootID, "❌ Could not post the screenshot: "+err.Error())
 	}
 	if f := strings.Fields(cmd); len(f) == 0 || !escCommands[f[0]] {
 		return
@@ -120,7 +121,7 @@ func (a *app) settledScreen(id string) (screen []byte, settled bool, err error) 
 }
 
 // postScreen posts the grid into the thread as a PNG.
-func (a *app) postScreen(rootID, msg string, g [][]cell) error {
+func (a *app) postScreen(channelID, rootID, msg string, g [][]cell) error {
 	faces, err := loadFonts()
 	if err != nil {
 		return err
@@ -129,11 +130,11 @@ func (a *app) postScreen(rootID, msg string, g [][]cell) error {
 	if err := png.Encode(&buf, render(g, faces)); err != nil {
 		return err
 	}
-	id, err := a.uploadFile(a.dmID, "screen.png", buf.Bytes())
+	id, err := a.uploadFile(channelID, "screen.png", buf.Bytes())
 	if err != nil {
 		return err
 	}
-	return a.api(http.MethodPost, "/posts", post{ChannelID: a.dmID, RootID: rootID, Message: msg, FileIDs: []string{id}}, nil)
+	return a.api(http.MethodPost, "/posts", post{ChannelID: channelID, RootID: rootID, Message: msg, FileIDs: []string{id}}, nil)
 }
 
 // cell is one terminal cell; the cell after a wide one is left empty and skipped.

@@ -41,7 +41,7 @@ var catalog = map[string]map[string]string{
 		"settings.saved":  "Đã lưu cài đặt và khởi động lại daemon.",
 		"help": "**Các lệnh hỗ trợ**\n" +
 			"- Trả lời trong thread của một pane: gửi lệnh cho agent.\n" +
-			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`. Chỉ trong DM.\n" +
+			"- `#capture /command`: gõ lệnh rồi chụp màn hình pane, ví dụ `#capture /context`.\n" +
 			"- `#exec /command`: gõ đúng lệnh vào pane, không chụp màn hình, ví dụ gọi một skill, `/clear`, `/compact`.\n" +
 			"- `list`: xem các pane đang đẩy lên Mattermost (chỉ trong DM, gửi ngoài thread).\n" +
 			"- `help`: hiện danh sách này. Trong thread, gõ sau @mention của bot.\n\n" +
@@ -96,7 +96,7 @@ var catalog = map[string]map[string]string{
 		"settings.saved":  "Settings saved and the daemon restarted.",
 		"help": "**Supported commands**\n" +
 			"- Reply in a pane's thread: prompt its agent.\n" +
-			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`. DM only.\n" +
+			"- `#capture /command`: type the command, then post a screenshot of the pane, for example `#capture /context`.\n" +
 			"- `#exec /command`: type exactly the command into the pane, without a screenshot, for example a skill, `/clear`, `/compact`.\n" +
 			"- `list`: list the mirrored panes (DM only, outside a thread).\n" +
 			"- `help`: show this list. In a thread, write it after the bot's @mention.\n\n" +

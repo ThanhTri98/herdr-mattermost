@@ -11,7 +11,7 @@ Switch mirroring on for a pane and the bot opens a thread for it in your direct 
 - A thread reply starting with `#capture` also posts a screenshot of the pane into the thread. See [Screenshots](#screenshots).
 - A thread reply starting with `#exec` types the rest exactly as written, such as `#exec /clear` or `#exec /compact`, with the same acknowledgement and reply posting as a normal reply and no screenshot. Mattermost takes a message starting with `/` as its own slash command and never posts it, so `#exec` is how a slash command reaches the agent. `#exec` on its own gets a usage line.
 - Sending `list` in the DM (outside a thread) lists the mirrored panes and their statuses.
-- Sending `help` in the DM outside a thread gets the list of commands, as does any other top-level DM message except `list`. In a thread, write the bot's @mention followed by `help`, such as `@herdr help`; a bare `help` reply in a thread is typed into the agent like any other reply. The list marks `#capture` and `list` as DM only.
+- Sending `help` in the DM outside a thread gets the list of commands, as does any other top-level DM message except `list`. In a thread, write the bot's @mention followed by `help`, such as `@herdr help`; a bare `help` reply in a thread is typed into the agent like any other reply. The list marks `list` as DM only.
 
 Only the one Mattermost user named in `MM_USER` is obeyed: in the bot's DM, and in a channel linked to a pane when they @mention the bot. Everyone else, the bot itself, and bot, webhook or system posts, such as a channel header change, are ignored, except that someone else who @mentions the bot in a linked channel is told who controls it.
 
@@ -96,11 +96,11 @@ The language applies to everything the bot and the popup write themselves: root 
 
 A pane can be mirrored into a channel instead of the DM, never both. Add the bot to the channel in Mattermost, open the status popup, select the pane and press `t`. The picker lists the DM first, then the public and private channels the bot is in, named after their team when the bot is in more than one. A channel holds one pane: a channel already linked to another pane is not offered, and if `targets.json` in the state directory ever links two panes to one channel, the first in pane id order keeps it and the other goes back to the DM. Panes start on the DM. Picking a new place for a mirrored pane stops its thread where it was, with the usual stop notice there, and starts a new thread in the new place. The choice is kept when mirroring is switched off, follows the pane when it moves to another workspace, and is forgotten when the pane closes.
 
-In a channel the pane's root post and replies are posted like in the DM, but only your own posts that @mention the bot are typed into the agent, top-level or in any thread of the channel, including the pane's own thread. The mention is removed before typing. A top-level mention is answered in its own thread, and a mention in a thread is answered in that thread: the acknowledgement, then the agent's reply, which @mentions you. A dialog alert is posted in the thread of the last question and @mentions you. Posts without the mention are ignored. Anyone else who @mentions the bot there gets one reply saying only you control the agent, and nothing is typed. Mentions sent while the bot was disconnected are handled when it reconnects, but not those sent before the pane's thread was started in the channel, and a channel the bot can no longer read is skipped. Connect notices and the `list` command stay in the DM, and `#capture` works only in the DM. `#exec` and `help` work in the channel too, after the mention.
+In a channel the pane's root post and replies are posted like in the DM, but only your own posts that @mention the bot are typed into the agent, top-level or in any thread of the channel, including the pane's own thread. The mention is removed before typing. A top-level mention is answered in its own thread, and a mention in a thread is answered in that thread: the acknowledgement, then the agent's reply, which @mentions you. A dialog alert is posted in the thread of the last question and @mentions you. Posts without the mention are ignored. Anyone else who @mentions the bot there gets one reply saying only you control the agent, and nothing is typed. Mentions sent while the bot was disconnected are handled when it reconnects, but not those sent before the pane's thread was started in the channel, and a channel the bot can no longer read is skipped. Connect notices and the `list` command stay in the DM. `#capture`, `#exec` and `help` work in the channel too, after the mention, such as `@herdr #capture /context`; the screenshot is posted into the thread of that post.
 
 ### Screenshots
 
-Some output is only drawn in the terminal and never reaches the transcript, such as Claude's `/context`. To see it, reply in the pane's thread with `#capture` followed by what to type:
+Some output is only drawn in the terminal and never reaches the transcript, such as Claude's `/context`. To see it, reply in the pane's thread with `#capture` followed by what to type (in a channel, @mention the bot first, top-level or in any thread):
 
 ```
 #capture /context
@@ -158,7 +158,6 @@ Not built yet:
 - Screenshots of the scrollback, or triggered by anything but a thread reply.
 - Agents other than Claude Code.
 - Letting people other than `MM_USER` prompt an agent from a channel, a read-only mode for them, and `@all` or `@channel` as a mention of the bot.
-- `#capture` in a channel.
 - In a channel, a turn is answered in the thread of the latest question, so a reply to an earlier question from another thread, still being worked on, lands in the newer thread.
 - Slash commands and webhooks.
 - More than one machine, or more than one herdr session at a time: pane ids are not unique across sessions, and the single daemon prompts through the session that started it.

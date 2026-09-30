@@ -199,7 +199,7 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 
 	fonts := fontPaths
 	fontPaths = nil
-	e.a.capture("root1", "")
+	e.a.capture("dm", "root1", "")
 	fontPaths = fonts
 	posts := e.mm.snapshot()
 	if len(posts) != 1 || len(posts[0].FileIDs) != 0 || !strings.HasPrefix(posts[0].Message, "❌ Could not post the screenshot: no monospace font found") {
@@ -209,7 +209,7 @@ func TestCaptureTimeoutAndNoFont(t *testing.T) {
 	if _, err := loadFonts(); err != nil {
 		t.Skip(err)
 	}
-	e.a.capture("root1", "")
+	e.a.capture("dm", "root1", "")
 	posts = e.mm.snapshot()
 	if len(posts) != 2 || len(posts[1].FileIDs) != 1 || !strings.Contains(posts[1].Message, "still changing") {
 		t.Fatalf("timed-out posts = %+v", posts)
@@ -227,7 +227,7 @@ func TestCaptureBlockedIsImmediate(t *testing.T) {
 	os.WriteFile(filepath.Join(e.herdrDir, "screen.ansi"), []byte("Do you want to proceed?\r\n"), 0o644)
 
 	start := time.Now()
-	e.a.capture("root1", "")
+	e.a.capture("dm", "root1", "")
 	posts := e.mm.snapshot()
 	if len(posts) != 1 || len(posts[0].FileIDs) != 1 || strings.Contains(posts[0].Message, "still changing") || time.Since(start) > 5*time.Second {
 		t.Fatalf("blocked capture took %s: %+v", time.Since(start), posts)
@@ -258,7 +258,7 @@ func TestCaptureEscClosesSlashPanel(t *testing.T) {
 	} {
 		os.Remove(keys)
 		e.setAgent(t, c.status)
-		e.a.capture("root1", c.cmd)
+		e.a.capture("dm", "root1", c.cmd)
 		if got, _ := os.ReadFile(keys); string(got) != c.want {
 			t.Errorf("%s %q: keys %q, want %q", c.status, c.cmd, got, c.want)
 		}

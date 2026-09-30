@@ -369,8 +369,8 @@ func (a *app) handlePost(p post, late bool) error {
 		return nil
 	}
 
-	if cmd, ok := captureCmd(text); ok && inDM { // the rest is typed like any reply, then the screen is posted once it settles
-		defer func() { go a.capture(root, cmd) }()
+	if cmd, ok := captureCmd(text); ok { // the rest is typed like any reply, then the screen is posted once it settles
+		defer func() { go a.capture(p.ChannelID, root, cmd) }()
 		if cmd == "" {
 			return nil
 		}
