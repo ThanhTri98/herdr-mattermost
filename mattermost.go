@@ -227,17 +227,18 @@ func (a *app) listenOnce() error {
 	}
 	// ponytail: one post per connect, so a flapping network posts on every reconnect; rate limit if that bites.
 	if a.connected {
-		a.notice(a.reconnectedNotice(a.downAt, now()))
+		a.notice(a.reconnectedNotice(a.heardAt, now()))
 	} else {
 		a.notice(a.startedNotice())
 	}
 	a.connected = true
-	defer func() { a.downAt = now() }()
+	a.heardAt = now()
 
 	// Mattermost pings about every 60s; 2 minutes of silence means the connection is dead.
 	const readWait = 2 * time.Minute
 	conn.SetReadDeadline(time.Now().Add(readWait))
 	conn.SetPingHandler(func(data string) error {
+		a.heardAt = now()
 		conn.SetReadDeadline(time.Now().Add(readWait))
 		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(10*time.Second))
 	})
@@ -246,6 +247,7 @@ func (a *app) listenOnce() error {
 		if err != nil {
 			return err
 		}
+		a.heardAt = now()
 		conn.SetReadDeadline(time.Now().Add(readWait))
 		if err := a.handleEvent(msg); err != nil { // in order: handlePost dedupes by create_at
 			return err
@@ -319,7 +321,7 @@ func (a *app) startedNotice() post {
 
 func (a *app) reconnectedNotice(down, up time.Time) post {
 	const clock = "15:04:05 MST"
-	d := up.Sub(down).Round(time.Second)
+	d := up.Round(0).Sub(down.Round(0)).Round(time.Second)
 	return a.noticePost("#ecb22e", "notice.reconnected", "notice.down", fmt.Sprintf("%s → %s (%s)", down.Format(clock), up.Format(clock), d))
 }
 

@@ -69,7 +69,7 @@ type app struct {
 	botID, botName                                       string    // filled by connect
 	lastPost                                             int64     // create_at of the last post the daemon handled
 	connected                                            bool      // the daemon's WebSocket has connected before
-	downAt                                               time.Time // when the WebSocket last dropped
+	heardAt                                              time.Time // when the WebSocket last heard from Mattermost
 }
 
 func load() (*app, error) {

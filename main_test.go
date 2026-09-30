@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -119,13 +120,18 @@ func TestCatchUpDeliversMissedReplies(t *testing.T) {
 
 func TestConnectAnnounced(t *testing.T) {
 	defer func(f func() time.Time) { now = f }(now)
+	var mu sync.Mutex
 	clock := time.Date(2026, 9, 30, 10, 0, 0, 0, time.FixedZone("ICT", 7*3600))
-	now = func() time.Time { clock = clock.Add(90 * time.Second); return clock }
+	tick := func(d time.Duration) { mu.Lock(); clock = clock.Add(d); mu.Unlock() }
+	now = func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
 	e := mirroredEnv(t)
+	pings := 0
+	e.mm.pinged = func() { pings++; tick(time.Duration(pings) * time.Minute) } // last heard at 10:01, dropped at 10:03
 	for range 2 {
 		if err := e.a.listenOnce(); err == nil {
 			t.Fatal("listenOnce returned without the connection dropping")
 		}
+		tick(5 * time.Second)
 	}
 	host, _ := os.Hostname()
 	posts := e.mm.snapshot()
@@ -134,7 +140,7 @@ func TestConnectAnnounced(t *testing.T) {
 	}
 	want := []struct{ color, title, fields string }{
 		{"#2eb67d", "🟢 herdr-mm connected", "Host=`" + host + "`|Mirroring=1 pane(s)|"},
-		{"#ecb22e", "🟡 herdr-mm reconnected", "Host=`" + host + "`|Connection lost=10:01:30 ICT → 10:03:00 ICT (1m30s)|"},
+		{"#ecb22e", "🟡 herdr-mm reconnected", "Host=`" + host + "`|Connection lost=10:01:00 ICT → 10:03:05 ICT (2m5s)|"},
 	}
 	for i, p := range posts {
 		if p.ChannelID != "ts" || p.RootID != "" {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -30,9 +31,10 @@ func TestMain(m *testing.M) {
 type fakeMM struct {
 	mu        sync.Mutex
 	posts     []*post
-	now       int64 // create_at of the newest post
-	failPatch bool  // answer post edits with 500
-	failLogin int   // answer this many logins with 503
+	now       int64  // create_at of the newest post
+	failPatch bool   // answer post edits with 500
+	failLogin int    // answer this many logins with 503
+	pinged    func() // runs each time the WebSocket client answers a ping
 
 	files []string // "channel_id|name|content" of each upload
 }
@@ -47,10 +49,26 @@ func (f *fakeMM) add(p post) {
 }
 
 func (f *fakeMM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/api/v4/websocket" { // reads the authentication challenge, then drops the connection
-		if conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil); err == nil {
-			conn.ReadMessage()
-			conn.Close()
+	if r.URL.Path == "/api/v4/websocket" { // reads the authentication challenge, pings twice, then drops the connection
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.ReadMessage()
+		pong, closed := make(chan struct{}), make(chan struct{})
+		conn.SetPongHandler(func(string) error { pong <- struct{}{}; return nil })
+		go func() { conn.ReadMessage(); close(closed) }()
+		for range 2 {
+			conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(time.Second))
+			select {
+			case <-pong:
+			case <-closed:
+				return
+			}
+			if f.pinged != nil {
+				f.pinged()
+			}
 		}
 		return
 	}
