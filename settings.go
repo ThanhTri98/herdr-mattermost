@@ -47,9 +47,8 @@ func writeFile(path string, v any) error {
 }
 
 // editSettings asks for each setting on w and reads the answers from r, then saves them. An empty
-// answer keeps the saved value, so a field left unsaved still comes from .env. hide turns echo off
-// while the token is typed.
-func (a *app) editSettings(r *bufio.Reader, w io.Writer, hide func(bool)) error {
+// answer keeps the saved value, so a field left unsaved still comes from .env.
+func (a *app) editSettings(r *bufio.Reader, w io.Writer) error {
 	s, err := readSettings(a.settingsPath)
 	if err != nil {
 		return err
@@ -71,11 +70,7 @@ func (a *app) editSettings(r *bufio.Reader, w io.Writer, hide func(bool)) error 
 	if a.token != "" {
 		set = a.t("settings.set")
 	}
-	hide(true)
-	v, err = ask(fmt.Sprintf(a.t("settings.token"), set))
-	hide(false)
-	fmt.Fprintln(w)
-	if err != nil {
+	if v, err = ask(fmt.Sprintf(a.t("settings.token"), set)); err != nil {
 		return err
 	}
 	if v != "" {
@@ -126,13 +121,7 @@ func (a *app) settingsScreen() string {
 	fmt.Print("\x1b[H\x1b[2J")
 	stty("icanon", "echo")
 	defer stty("-icanon", "-echo", "min", "1")
-	err := a.editSettings(bufio.NewReader(os.Stdin), os.Stdout, func(hide bool) {
-		if hide {
-			stty("-echo")
-		} else {
-			stty("echo")
-		}
-	})
+	err := a.editSettings(bufio.NewReader(os.Stdin), os.Stdout)
 	if err == nil {
 		err = a.stop() // the next daemon reads the settings afresh
 	}

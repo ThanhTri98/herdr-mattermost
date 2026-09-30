@@ -186,13 +186,12 @@ func TestSettingsPrecedence(t *testing.T) {
 	}
 
 	var out strings.Builder
-	var hidden []bool
 	in := bufio.NewReader(strings.NewReader("https://saved.example/\nnew-secret\n\n"))
-	if err := a.editSettings(in, &out, func(h bool) { hidden = append(hidden, h) }); err != nil {
+	if err := a.editSettings(in, &out); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "new-secret") || strings.Contains(out.String(), "saved-tok") || !slices.Equal(hidden, []bool{true, false}) {
-		t.Fatalf("the token must be hidden and never printed: %q %v", out.String(), hidden)
+	if strings.Contains(out.String(), "new-secret") || strings.Contains(out.String(), "saved-tok") {
+		t.Fatalf("the token must never be printed: %q", out.String())
 	}
 	if fi, err := os.Stat(a.settingsPath); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("settings.json mode = %v %v", fi, err)
@@ -485,9 +484,9 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 		t.Fatalf("%s never happened", what)
 	}
 
-	screen("Press q or Esc to close.")
+	screen("q or Esc: close")
 	stdin.Write([]byte("\r"))
-	picker := screen("q or Esc to cancel.")
+	picker := screen("q or Esc: cancel")
 	if !strings.Contains(picker, "Pick the channel to mirror api") || !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  🔒 Ops") ||
 		strings.Contains(picker, "Town Square") || strings.Contains(picker, "Off-Topic") || strings.Contains(picker, "alice") || strings.Contains(picker, "Unlink") {
 		t.Fatalf("picker = %q", picker)
@@ -497,10 +496,10 @@ func TestPopupPicksChannelBeforeMirroring(t *testing.T) {
 	wait("mirroring in Dev", func(panes map[string]*pane, targets map[string]target) bool {
 		return panes["w1:p1"] != nil && panes["w1:p1"].ChannelID == "ch1" && targets["w1:p1"].ID == "ch1"
 	})
-	screen("Press q or Esc to close.")
+	screen("q or Esc: close")
 
 	stdin.Write([]byte("t"))
-	if picker = screen("q or Esc to cancel."); !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  Unlink the channel (stops mirroring)") {
+	if picker = screen("q or Esc: cancel"); !strings.Contains(picker, "> # Dev") || !strings.Contains(picker, "  Unlink the channel (stops mirroring)") {
 		t.Fatalf("picker of a linked pane = %q", picker)
 	}
 	stdin.Write([]byte("jj\r"))

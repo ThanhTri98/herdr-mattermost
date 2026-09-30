@@ -46,7 +46,7 @@ herdr plugin link "$PWD"
 
 ### 3. Enter the settings
 
-Open the status popup (see [Usage](#usage)) and press `s`. Enter the Mattermost URL, the bot token and your own Mattermost username; press `Enter` on a line to keep its current value. The token is not shown while you type it and is never printed. The values are saved in `settings.json` in the plugin config directory, `herdr plugin config-dir herdr-mattermost`, with mode 600, and the daemon is restarted so it uses them.
+Open the status popup (see [Usage](#usage)) and press `s`. Enter the Mattermost URL, the bot token and your own Mattermost username; press `Enter` on a line to keep its current value. The token is shown while you type it, but never printed afterwards. The values are saved in `settings.json` in the plugin config directory, `herdr plugin config-dir herdr-mattermost`, with mode 600, and the daemon is restarted so it uses them.
 
 Or write them in a `.env` file in that directory instead:
 
