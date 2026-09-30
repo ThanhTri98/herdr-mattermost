@@ -1,7 +1,7 @@
 // herdr-mm mirrors opted-in herdr agent panes into Mattermost channels, one channel per pane, obeying one user.
 //
 //	herdr-mm start   startup hook: launch the daemon detached (a second daemon exits at once)
-//	herdr-mm daemon  hold the Mattermost WebSocket and type thread replies into agents
+//	herdr-mm daemon  hold the Mattermost WebSocket and type @mentions of the bot into agents
 //	herdr-mm toggle  pane action: start or stop mirroring $HERDR_PANE_ID
 //	herdr-mm event   event hook: sync a mirrored pane's thread on status change, move or close
 //	herdr-mm stop    action: stop the daemon and wait for it to exit
@@ -757,12 +757,12 @@ type pane struct {
 	Name       string `json:"name,omitempty"`        // the pane's label, kept by sync for the stop notice
 	LastReply  string `json:"last_reply,omitempty"`  // uuid of the transcript entry last handled, posted or not
 	LastDialog string `json:"last_dialog,omitempty"` // dialog last posted while blocked
-	Prompted   recent `json:"prompted,omitempty"`    // thread replies last typed into the agent
+	Prompted   recent `json:"prompted,omitempty"`    // posts last typed into the agent
 	Channel    string `json:"channel,omitempty"`     // name of the channel the thread is in; "" was the DM, no longer supported
 	ReplyRoot  string `json:"reply_root,omitempty"`  // the thread of the last question typed in
 }
 
-// recent is the last few thread replies typed into a pane, oldest first. panes.json written before
+// recent is the last few posts typed into a pane, oldest first. panes.json written before
 // it was a list holds a single string.
 type recent []string
 

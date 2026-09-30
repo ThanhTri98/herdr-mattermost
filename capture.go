@@ -26,10 +26,10 @@ import (
 	"golang.org/x/text/width"
 )
 
-// captureCmd reports whether a thread reply asks for a screenshot, and the text to type first.
+// captureCmd reports whether a post asks for a screenshot, and the text to type first.
 func captureCmd(msg string) (string, bool) { return prefixCmd(msg, "#capture") }
 
-// execCmd reports whether a thread reply asks to type the rest as is, such as a "/clear" that
+// execCmd reports whether a post asks to type the rest as is, such as a "/clear" that
 // Mattermost would otherwise take as its own slash command.
 func execCmd(msg string) (string, bool) { return prefixCmd(msg, "#exec") }
 
