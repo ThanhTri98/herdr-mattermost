@@ -2,6 +2,8 @@
 
 herdr plugin that mirrors agent panes to Mattermost and relays replies back.
 
+An introduction page in Vietnamese, with a simulated demo and an interactive diagram: https://dc31737e.ht-ml.app/
+
 The bot works only in channels. Link a pane to a channel the bot is in (see [Channels](#channels)) and switch mirroring on, and the bot opens a thread for it in that channel:
 
 - The thread's root post shows the agent's live status (🟢 idle, ⏳ working, ✅ done, ✋ blocked, ❔ unknown) and is edited in place.
